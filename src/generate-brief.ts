@@ -1,238 +1,208 @@
 /**
- * fetch-data.ts
+ * generate-brief.ts
  *
- * Pulls today's Todoist tasks (including overdue) and Google Calendar events
- * (today + tomorrow AM) then writes a dated JSON file to DATA_DIR.
+ * Reads today's data.json, builds a prompt embedding the full daily-prep
+ * skill logic, then invokes `claude` CLI (Claude Code) in --print mode
+ * to generate the brief. Output is written to DATA_DIR/YYYY-MM-DD/brief.md
  *
- * Output: DATA_DIR/YYYY-MM-DD/data.json
+ * Claude Code CLI flags used:
+ *   --print                       non-interactive, print response to stdout then exit
+ *   --dangerously-skip-permissions  suppress permission prompts for automation
+ *   -p "<prompt>"                 the prompt to run
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import axios from "axios";
-import { google } from "googleapis";
+import { spawnSync } from "child_process";
 import * as dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
-// ─── Config ──────────────────────────────────────────────────────────────────
-
-const TODOIST_TOKEN = process.env.TODOIST_API_TOKEN!;
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
-const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN!;
-const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID ?? "primary";
-const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../data");
-const TIMEZONE = process.env.TIMEZONE ?? "America/Chicago";
-
-function required(name: string, val: string | undefined): string {
-  if (!val) throw new Error(`Missing env var: ${name}`);
-  return val;
-}
-
-// ─── Date helpers ─────────────────────────────────────────────────────────────
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../brief_output");
+const TIMEZONE = process.env.TIMEZONE || "America/Chicago";
 
 function toLocalDateString(date: Date, tz: string): string {
-  return date.toLocaleDateString("en-CA", { timeZone: tz }); // YYYY-MM-DD
+  return date.toLocaleDateString("en-CA", { timeZone: tz });
 }
 
-function startOfDayUTC(dateStr: string, tz: string): string {
-  // Returns ISO string for midnight local time in tz
-  const d = new Date(`${dateStr}T00:00:00`);
-  // Construct as local midnight via Intl
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  });
-  // Use a simpler approach: just pass the string with timezone offset
-  return `${dateStr}T00:00:00`;
+function buildPrompt(dataJson: string, today: string): string {
+  // Embed the raw data JSON directly in the prompt. Claude Code will
+  // reason over it without needing MCP tool calls — the data is already
+  // fetched by fetch-data.ts.
+  return `You are a sharp chief of staff running Ben's daily planning workflow.
+
+Today's date is ${today}. Timezone: ${TIMEZONE}.
+
+Below is the pre-fetched data for today: Todoist tasks and Google Calendar events.
+Do NOT call any external tools — all data you need is here.
+
+<data>
+${dataJson}
+</data>
+
+<instructions>
+Produce Ben's daily brief using the following rules exactly.
+
+## Priority mapping
+Todoist's API returns priority as an integer where 4=P1 (urgent), 3=P2, 2=P3, 1=normal/P4.
+Always translate before display: API priority 4 → P1, 3 → P2, 2 → P3, 1 → P4.
+
+## Projects
+The \`todoist.projects\` map gives project id → name. Match each task's project_id to get its name.
+Tasks in the project named "Redox" are Work. Everything else is Personal.
+
+## Labels
+Each task's \`labels\` array contains label names directly (e.g. "30min", "important"). Use them as-is.
+
+## Step 1: Understand the data
+- \`todoist.todayAndOverdue\` — tasks due today OR overdue (due_date < today)
+- \`todoist.importantUndated\` — @important tasks not due today/overdue (may have future due dates)
+- \`calendar.today\` — all events today (00:00–23:59)
+- \`calendar.tomorrowAM\` — events tomorrow 6 AM–11 AM (for prep-gap detection)
+
+## Step 2: Bucket and estimate
+Work = Redox project. Personal = everything else.
+
+Time estimates — apply in order:
+1. Labels: 15min / 30min / 1hour → use literally
+2. Heuristic by verb:
+   - submit / send / file / ping / repull → 15m
+   - review / scope / check / pull / read → 30m
+   - create / draft / build / write / work on → 60m
+   - plan / put together / one-pager / proposal → 60–90m
+3. Truly ambiguous → 30m, flagged as ~30m?
+
+Overdue = due.date < today → mark [overdue]
+Stale deadline = deadline.date < today → mark [deadline expired DATE]
+
+## Step 3: Compute the day
+Working window: 9 AM–5 PM Central = 480 min.
+Meeting minutes = sum duration of opaque calendar events (transparency != "transparent") overlapping 9–5.
+Free minutes = 480 − meeting minutes.
+If meeting minutes > 240, subtract another 30 min (context-switch tax).
+
+Deep-work block: longest contiguous gap between 6 AM and noon, counting:
+- Pre-9 AM transparent/self-scheduled blocks (Focus Time, etc.)
+- 9 AM onward gaps with no opaque event
+
+## Step 4: Surface flags
+- Overcommitment: estimates > 1.25× free time → flag with numbers + drop list
+- Calendar/Todoist drift: for each all-day event, check if a task matches by shared proper nouns/acronyms
+- Stale deadlines
+- Tomorrow-AM prep gaps: external attendees, customer names, agenda gaps + Ben is speaker
+- Personal anchors: timed personal events (school pickup, appointments)
+
+## Step 5: Pick morning deep-work item
+Walk tiebreakers:
+1. Calendar-linked P1 with external dependency due today
+2. P1 that fits the block size
+3. P1 + @important
+4. Any remaining P1
+5. P2 + @important (only if no P1s)
+6. Any @important
+Justify in one sentence.
+
+## Step 6: Output format
+Use this exact structure:
+
+\`\`\`
+## Daily Prep — [Day, Date]
+
+**[One-line: meeting load, free time, verdict.]**
+
+### Top of mind
+- [flags — omit section only if everything is clean]
+
+### Morning deep-work pick
+**[Task]** — [why, one sentence]
+Block: [HH:MM–HH:MM] ([N] min)
+
+### Work — ranked
+1. **[Task]** [P1] [@important] (~30m) [overdue|deadline expired if applicable]
+2. ...
+
+### Personal — ranked
+1. **[Task]** (~15m)
+2. ...
+
+### Today's calendar
+- HH:MM–HH:MM  [Event]  [flags]
+- ...
+
+### Suggested timeline
+- HH:MM–HH:MM  Deep work: [pick]
+- HH:MM–HH:MM  [Meeting or Task]
+- ...
+- 5:00  Wrap
+
+### Undated @important (not slotted)
+- [Task] — slot today? (y/n)
+\`\`\`
+
+## Tone
+Direct. No fluff. Short lines, bold names, skim-friendly.
+Push back on overcommitment with numbers, not vibes.
+If the day is light, say so.
+No emojis anywhere. This prints on paper in a monospaced font.
+
+Do not add any preamble or postamble outside the brief format above.
+</instructions>`;
 }
-
-// ─── Todoist ──────────────────────────────────────────────────────────────────
-
-interface TodoistTask {
-  id: string;
-  content: string;
-  description: string;
-  project_id: string;
-  section_id: string | null;
-  parent_id: string | null;
-  priority: number; // 1=normal, 2=p3, 3=p2, 4=p1 in Todoist's inverted scale
-  due: { string: string; date: string; is_recurring: boolean; datetime?: string } | null;
-  deadline: { date: string; lang: string } | null;
-  labels: string[];
-  is_completed: boolean;
-  created_at: string;
-  url: string;
-}
-
-async function fetchTodoistTasks(today: string): Promise<{
-  todayAndOverdue: TodoistTask[];
-  important: TodoistTask[];
-  projects: Record<string, string>; // id → name
-}> {
-  const api = axios.create({
-    baseURL: "https://api.todoist.com/rest/v2",
-    headers: { Authorization: `Bearer ${TODOIST_TOKEN}` },
-  });
-
-  // Fetch projects for name lookup
-  const projectsRes = await api.get<Array<{ id: string; name: string }>>("/projects");
-  const projects: Record<string, string> = {};
-  for (const p of projectsRes.data) {
-    projects[p.id] = p.name;
-  }
-
-  // Today's tasks + overdue: filter = "today | overdue"
-  const todayRes = await api.get<TodoistTask[]>("/tasks", {
-    params: { filter: "today | overdue" },
-  });
-
-  // @important label tasks (any date)
-  const importantRes = await api.get<TodoistTask[]>("/tasks", {
-    params: { filter: "@important" },
-  });
-
-  // Deduplicate: important tasks already in today/overdue shouldn't double-count
-  const todayIds = new Set(todayRes.data.map((t) => t.id));
-  const importantOnly = importantRes.data.filter((t) => !todayIds.has(t.id));
-
-  return {
-    todayAndOverdue: todayRes.data,
-    important: importantOnly,
-    projects,
-  };
-}
-
-// ─── Google Calendar ──────────────────────────────────────────────────────────
-
-interface CalendarEvent {
-  id: string;
-  summary: string;
-  description?: string;
-  location?: string;
-  start: { dateTime?: string; date?: string; timeZone?: string };
-  end: { dateTime?: string; date?: string; timeZone?: string };
-  attendees?: Array<{ email: string; displayName?: string; responseStatus: string; self?: boolean }>;
-  status: string;
-  transparency?: string; // "transparent" = free/focus block
-  organizer?: { email: string; displayName?: string; self?: boolean };
-  htmlLink: string;
-}
-
-async function fetchCalendarEvents(today: string, tomorrow: string): Promise<{
-  todayEvents: CalendarEvent[];
-  tomorrowAMEvents: CalendarEvent[];
-}> {
-  const oAuth2Client = new google.auth.OAuth2(
-    GOOGLE_CLIENT_ID,
-    GOOGLE_CLIENT_SECRET
-  );
-  oAuth2Client.setCredentials({ refresh_token: GOOGLE_REFRESH_TOKEN });
-
-  const calendar = google.calendar({ version: "v3", auth: oAuth2Client });
-
-  // Today: full day
-  const todayStart = new Date(`${today}T00:00:00`);
-  const todayEnd = new Date(`${today}T23:59:59`);
-
-  // Tomorrow: 6 AM – 11 AM (for prep-gap detection)
-  const tomorrowStart = new Date(`${tomorrow}T06:00:00`);
-  const tomorrowEnd = new Date(`${tomorrow}T11:00:00`);
-
-  // Convert to UTC-aware ISO strings using Intl
-  function toUTCIso(localDate: Date, tz: string): string {
-    // Intl trick: format in target tz, parse back to get offset
-    const utcMs = localDate.getTime();
-    const tzOffsetMs = getTimezoneOffset(localDate, tz);
-    return new Date(utcMs - tzOffsetMs).toISOString();
-  }
-
-  function getTimezoneOffset(date: Date, tz: string): number {
-    const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
-    const tzStr = date.toLocaleString("en-US", { timeZone: tz });
-    return new Date(utcStr).getTime() - new Date(tzStr).getTime();
-  }
-
-  const [todayRes, tomorrowRes] = await Promise.all([
-    calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: toUTCIso(todayStart, TIMEZONE),
-      timeMax: toUTCIso(todayEnd, TIMEZONE),
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 50,
-    }),
-    calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: toUTCIso(tomorrowStart, TIMEZONE),
-      timeMax: toUTCIso(tomorrowEnd, TIMEZONE),
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 20,
-    }),
-  ]);
-
-  return {
-    todayEvents: (todayRes.data.items ?? []) as CalendarEvent[],
-    tomorrowAMEvents: (tomorrowRes.data.items ?? []) as CalendarEvent[],
-  };
-}
-
-// ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
-  required("TODOIST_API_TOKEN", TODOIST_TOKEN);
-  required("GOOGLE_CLIENT_ID", GOOGLE_CLIENT_ID);
-  required("GOOGLE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET);
-  required("GOOGLE_REFRESH_TOKEN", GOOGLE_REFRESH_TOKEN);
-
   const now = new Date();
   const today = toLocalDateString(now, TIMEZONE);
-  const tomorrowDate = new Date(now);
-  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-  const tomorrow = toLocalDateString(tomorrowDate, TIMEZONE);
-
-  console.log(`[fetch-data] Fetching data for ${today} (tz: ${TIMEZONE})`);
-
-  const [todoistData, calendarData] = await Promise.all([
-    fetchTodoistTasks(today),
-    fetchCalendarEvents(today, tomorrow),
-  ]);
-
-  const output = {
-    generatedAt: now.toISOString(),
-    date: today,
-    timezone: TIMEZONE,
-    todoist: {
-      todayAndOverdue: todoistData.todayAndOverdue,
-      importantUndated: todoistData.important,
-      projects: todoistData.projects,
-    },
-    calendar: {
-      today: calendarData.todayEvents,
-      tomorrowAM: calendarData.tomorrowAMEvents,
-    },
-  };
-
-  // Write to dated directory
   const dir = path.join(DATA_DIR, today);
-  fs.mkdirSync(dir, { recursive: true });
-  const outPath = path.join(dir, "data.json");
-  fs.writeFileSync(outPath, JSON.stringify(output, null, 2));
+  const dataPath = path.join(dir, "data.json");
+  const briefPath = path.join(dir, "brief.md");
 
-  console.log(`[fetch-data] ✓ Wrote ${outPath}`);
-  console.log(
-    `[fetch-data]   ${todoistData.todayAndOverdue.length} tasks today/overdue, ` +
-    `${todoistData.important.length} @important undated, ` +
-    `${calendarData.todayEvents.length} events today, ` +
-    `${calendarData.tomorrowAMEvents.length} events tomorrow AM`
+  if (!fs.existsSync(dataPath)) {
+    console.error(`[generate-brief] No data file found at ${dataPath}`);
+    console.error(`[generate-brief] Run fetch-data.ts first.`);
+    process.exit(1);
+  }
+
+  const dataJson = fs.readFileSync(dataPath, "utf8");
+  const prompt = buildPrompt(dataJson, today);
+
+  // Write prompt for debugging
+  const promptPath = path.join(dir, "prompt.txt");
+  fs.writeFileSync(promptPath, prompt);
+
+  console.log(`[generate-brief] Invoking Claude Code for ${today}...`);
+
+  const result = spawnSync(
+    "claude",
+    ["--print", "--dangerously-skip-permissions", "--model", "claude-sonnet-4-6", "-p", prompt],
+    {
+      encoding: "utf8",
+      timeout: 300_000, // 5 minutes
+      maxBuffer: 10 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "pipe"],
+    }
   );
+
+  if (result.status !== 0 || result.error) {
+    console.error("[generate-brief] Claude Code failed:");
+    console.error("  exit code:", result.status);
+    console.error("  signal:", result.signal);
+    console.error("  error:", result.error?.message);
+    console.error("  stderr:", result.stderr || "(empty)");
+    console.error("  stdout:", result.stdout?.slice(0, 500) || "(empty)");
+    process.exit(1);
+  }
+
+  let brief: string = result.stdout;
+
+  // Clean any residual ANSI codes just in case
+  brief = brief.replace(/\x1B\[[0-9;]*[mGKHF]/g, "").trim();
+
+  fs.writeFileSync(briefPath, brief);
+  console.log(`[generate-brief] ✓ Brief written to ${briefPath}`);
+  console.log(`[generate-brief]   ${brief.split("\n").length} lines`);
 }
 
 main().catch((err) => {
-  console.error("[fetch-data] ERROR:", err.message);
+  console.error("[generate-brief] ERROR:", err.message);
   process.exit(1);
 });

@@ -56,29 +56,76 @@ Fill in:
 2. Create a project → Enable **Google Calendar API**
 3. Create OAuth credentials: **Desktop app** type
 4. Download the credentials and copy `client_id` and `client_secret` into `.env`
-5. Run the auth setup script:
+5. The setup script listens on port 3456 for the OAuth callback. Since the Pi is headless,
+   open an SSH tunnel from your Mac **before** running the script:
+
+```bash
+# On your Mac — keep this terminal open
+ssh -L 3456:localhost:3456 pi@<pi-ip>
+```
+
+6. In a second terminal (SSH'd into the Pi), run the auth script:
 
 ```bash
 npx ts-node src/setup-gcal-auth.ts
 ```
 
-This opens a browser, asks you to authorize, and writes the refresh token to `.env`.
-You only need to do this once — the token auto-refreshes.
+7. Copy the URL it prints, open it in your Mac's browser, and authorize.
+   The callback will tunnel back through port 3456 to the Pi automatically.
 
-### 4. Find your printer
+The script writes the refresh token to `.env`. You only need to do this once — the token auto-refreshes.
+
+### 4. Set up the printer
+
+#### Install CUPS
 
 ```bash
-# List known printers
-lpstat -p -d
+sudo apt update
+sudo apt install -y cups cups-client
 
-# Discover network printers
-lpinfo -v | grep -i ipp
+# Allow your user to manage printers without sudo
+sudo usermod -aG lpadmin pi
 
-# Add a network printer (if needed)
-sudo lpadmin -p "MyPrinter" -E -v ipp://192.168.1.x/ipp/print -m everywhere
+# Enable and start CUPS
+sudo systemctl enable cups
+sudo systemctl start cups
 ```
 
-Set `PRINTER_NAME` in `.env` to the name shown by `lpstat -p`.
+#### Find your printer's IP address
+
+Check your router's admin page, or scan the local network:
+
+```bash
+# Option A: check router's DHCP table at 192.168.1.1 (or similar)
+
+# Option B: scan for IPP printers
+lpinfo -v | grep -i ipp
+
+# Option C: nmap scan (install with: sudo apt install nmap)
+sudo nmap -p 631 192.168.1.0/24 --open
+```
+
+#### Add the printer to CUPS
+
+```bash
+# Add a network printer by IP (IPP is standard for most modern printers)
+sudo lpadmin -p "MyPrinter" -E -v ipp://192.168.1.x/ipp/print -m everywhere
+
+# Verify it was added
+lpstat -p -d
+
+# Send a test page
+lp -d "MyPrinter" /etc/motd
+```
+
+Replace `MyPrinter` with a short name you choose (no spaces) and `192.168.1.x` with your printer's IP.
+
+#### Set PRINTER_NAME in .env
+
+```bash
+# Whatever name you used in lpadmin -p above
+PRINTER_NAME=MyPrinter
+```
 
 ### 5. Authenticate Claude Code
 

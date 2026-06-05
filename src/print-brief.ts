@@ -18,8 +18,8 @@ import * as dotenv from "dotenv";
 
 dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
-const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../data");
-const TIMEZONE = process.env.TIMEZONE ?? "America/Chicago";
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../brief_output");
+const TIMEZONE = process.env.TIMEZONE || "America/Chicago";
 const PRINTER_NAME = process.env.PRINTER_NAME;
 const PRINTER_OPTIONS = process.env.PRINTER_OPTIONS ?? "";
 
