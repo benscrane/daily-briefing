@@ -1,0 +1,21 @@
+{
+  "name": "daily-brief",
+  "version": "1.0.0",
+  "description": "Automated daily brief: Todoist + Google Calendar → Claude → printer",
+  "scripts": {
+    "fetch": "npx ts-node src/fetch-data.ts",
+    "generate": "npx ts-node src/generate-brief.ts",
+    "print": "npx ts-node src/print-brief.ts",
+    "run": "bash daily-brief.sh"
+  },
+  "dependencies": {
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.1",
+    "googleapis": "^128.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.0"
+  }
+}
