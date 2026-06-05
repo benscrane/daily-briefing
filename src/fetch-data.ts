@@ -21,9 +21,12 @@ const TODOIST_TOKEN = process.env.TODOIST_API_TOKEN!;
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID!;
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET!;
 const GOOGLE_REFRESH_TOKEN = process.env.GOOGLE_REFRESH_TOKEN!;
-const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID ?? "primary";
-const DATA_DIR = process.env.DATA_DIR ?? path.resolve(__dirname, "../data");
-const TIMEZONE = process.env.TIMEZONE ?? "America/Chicago";
+const DATA_DIR = process.env.DATA_DIR || path.resolve(__dirname, "../brief_output");
+const TIMEZONE = process.env.TIMEZONE || "America/Chicago";
+
+const CONFIG_PATH = path.resolve(__dirname, "../config.json");
+const config = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+const CALENDAR_IDS: string[] = config.calendarIds ?? ["primary"];
 
 function required(name: string, val: string | undefined): string {
   if (!val) throw new Error(`Missing env var: ${name}`);
@@ -34,20 +37,6 @@ function required(name: string, val: string | undefined): string {
 
 function toLocalDateString(date: Date, tz: string): string {
   return date.toLocaleDateString("en-CA", { timeZone: tz }); // YYYY-MM-DD
-}
-
-function startOfDayUTC(dateStr: string, tz: string): string {
-  // Returns ISO string for midnight local time in tz
-  const d = new Date(`${dateStr}T00:00:00`);
-  // Construct as local midnight via Intl
-  const formatter = new Intl.DateTimeFormat("en-CA", {
-    timeZone: tz,
-    year: "numeric", month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
-    hour12: false,
-  });
-  // Use a simpler approach: just pass the string with timezone offset
-  return `${dateStr}T00:00:00`;
 }
 
 // ─── Todoist ──────────────────────────────────────────────────────────────────
@@ -62,47 +51,62 @@ interface TodoistTask {
   priority: number; // 1=normal, 2=p3, 3=p2, 4=p1 in Todoist's inverted scale
   due: { string: string; date: string; is_recurring: boolean; datetime?: string } | null;
   deadline: { date: string; lang: string } | null;
-  labels: string[];
-  is_completed: boolean;
-  created_at: string;
-  url: string;
+  labels: string[]; // label IDs in API v1
+  checked: boolean;
+  added_at: string;
+}
+
+interface TodoistPagedResponse<T> {
+  results: T[];
+  next_cursor: string | null;
 }
 
 async function fetchTodoistTasks(today: string): Promise<{
   todayAndOverdue: TodoistTask[];
   important: TodoistTask[];
   projects: Record<string, string>; // id → name
+  labels: Record<string, string>;   // id → name
 }> {
   const api = axios.create({
-    baseURL: "https://api.todoist.com/rest/v2",
+    baseURL: "https://api.todoist.com/api/v1/",
     headers: { Authorization: `Bearer ${TODOIST_TOKEN}` },
   });
 
-  // Fetch projects for name lookup
-  const projectsRes = await api.get<Array<{ id: string; name: string }>>("/projects");
+  // Fetch projects and labels for name lookup
+  const [projectsRes, labelsRes] = await Promise.all([
+    api.get<TodoistPagedResponse<{ id: string; name: string }>>("projects", { params: { limit: 200 } }),
+    api.get<TodoistPagedResponse<{ id: string; name: string }>>("labels", { params: { limit: 200 } }),
+  ]);
+
   const projects: Record<string, string> = {};
-  for (const p of projectsRes.data) {
+  for (const p of projectsRes.data.results) {
     projects[p.id] = p.name;
   }
 
-  // Today's tasks + overdue: filter = "today | overdue"
-  const todayRes = await api.get<TodoistTask[]>("/tasks", {
-    params: { filter: "today | overdue" },
+  const labels: Record<string, string> = {};
+  for (const l of labelsRes.data.results) {
+    labels[l.id] = l.name;
+  }
+
+  // Today's tasks + overdue
+  const todayRes = await api.get<TodoistPagedResponse<TodoistTask>>("tasks/filter", {
+    params: { query: "today | overdue", limit: 200 },
   });
 
   // @important label tasks (any date)
-  const importantRes = await api.get<TodoistTask[]>("/tasks", {
-    params: { filter: "@important" },
+  const importantRes = await api.get<TodoistPagedResponse<TodoistTask>>("tasks/filter", {
+    params: { query: "@important", limit: 200 },
   });
 
   // Deduplicate: important tasks already in today/overdue shouldn't double-count
-  const todayIds = new Set(todayRes.data.map((t) => t.id));
-  const importantOnly = importantRes.data.filter((t) => !todayIds.has(t.id));
+  const todayIds = new Set(todayRes.data.results.map((t) => t.id));
+  const importantOnly = importantRes.data.results.filter((t) => !todayIds.has(t.id));
 
   return {
-    todayAndOverdue: todayRes.data,
+    todayAndOverdue: todayRes.data.results,
     important: importantOnly,
     projects,
+    labels,
   };
 }
 
@@ -142,43 +146,41 @@ async function fetchCalendarEvents(today: string, tomorrow: string): Promise<{
   const tomorrowStart = new Date(`${tomorrow}T06:00:00`);
   const tomorrowEnd = new Date(`${tomorrow}T11:00:00`);
 
-  // Convert to UTC-aware ISO strings using Intl
-  function toUTCIso(localDate: Date, tz: string): string {
-    // Intl trick: format in target tz, parse back to get offset
-    const utcMs = localDate.getTime();
-    const tzOffsetMs = getTimezoneOffset(localDate, tz);
-    return new Date(utcMs - tzOffsetMs).toISOString();
+  const results = await Promise.all(
+    CALENDAR_IDS.flatMap((calendarId) => [
+      calendar.events.list({
+        calendarId,
+        timeMin: todayStart.toISOString(),
+        timeMax: todayEnd.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 50,
+      }),
+      calendar.events.list({
+        calendarId,
+        timeMin: tomorrowStart.toISOString(),
+        timeMax: tomorrowEnd.toISOString(),
+        singleEvents: true,
+        orderBy: "startTime",
+        maxResults: 20,
+      }),
+    ])
+  );
+
+  const todayEvents: CalendarEvent[] = [];
+  const tomorrowAMEvents: CalendarEvent[] = [];
+
+  for (let i = 0; i < results.length; i += 2) {
+    todayEvents.push(...((results[i].data.items ?? []) as CalendarEvent[]));
+    tomorrowAMEvents.push(...((results[i + 1].data.items ?? []) as CalendarEvent[]));
   }
 
-  function getTimezoneOffset(date: Date, tz: string): number {
-    const utcStr = date.toLocaleString("en-US", { timeZone: "UTC" });
-    const tzStr = date.toLocaleString("en-US", { timeZone: tz });
-    return new Date(utcStr).getTime() - new Date(tzStr).getTime();
-  }
+  // Sort merged results by start time
+  const startTime = (e: CalendarEvent) => e.start.dateTime ?? e.start.date ?? "";
+  todayEvents.sort((a, b) => startTime(a).localeCompare(startTime(b)));
+  tomorrowAMEvents.sort((a, b) => startTime(a).localeCompare(startTime(b)));
 
-  const [todayRes, tomorrowRes] = await Promise.all([
-    calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: toUTCIso(todayStart, TIMEZONE),
-      timeMax: toUTCIso(todayEnd, TIMEZONE),
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 50,
-    }),
-    calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: toUTCIso(tomorrowStart, TIMEZONE),
-      timeMax: toUTCIso(tomorrowEnd, TIMEZONE),
-      singleEvents: true,
-      orderBy: "startTime",
-      maxResults: 20,
-    }),
-  ]);
-
-  return {
-    todayEvents: (todayRes.data.items ?? []) as CalendarEvent[],
-    tomorrowAMEvents: (tomorrowRes.data.items ?? []) as CalendarEvent[],
-  };
+  return { todayEvents, tomorrowAMEvents };
 }
 
 // ─── Main ─────────────────────────────────────────────────────────────────────
@@ -210,6 +212,7 @@ async function main() {
       todayAndOverdue: todoistData.todayAndOverdue,
       importantUndated: todoistData.important,
       projects: todoistData.projects,
+      labels: todoistData.labels,
     },
     calendar: {
       today: calendarData.todayEvents,
@@ -234,5 +237,10 @@ async function main() {
 
 main().catch((err) => {
   console.error("[fetch-data] ERROR:", err.message);
+  if (err.response) {
+    console.error("  status:", err.response.status);
+    console.error("  url:", err.config?.url);
+    console.error("  baseURL:", err.config?.baseURL);
+  }
   process.exit(1);
 });
