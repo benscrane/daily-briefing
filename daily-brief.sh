@@ -42,6 +42,35 @@ echo " Daily Brief — ${DATE}"
 echo " Started: $(date '+%Y-%m-%d %H:%M:%S %Z')"
 echo "════════════════════════════════════════"
 
+# ─── Config ───────────────────────────────────────────────────────────────────
+
+# Load .env if present (makes variables available without pre-exporting them)
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+  # shellcheck source=/dev/null
+  set -a; source "${SCRIPT_DIR}/.env"; set +a
+fi
+
+# ─── Notifications ────────────────────────────────────────────────────────────
+
+NTFY_TOPIC="${NTFY_TOPIC:-igpDbrgE5X1fJsrl}"
+
+_ntfy() {
+  local msg="$1" priority="${2:-}"
+  local args=(-s --max-time 10 -d "${msg}")
+  [[ -n "${priority}" ]] && args+=(-H "Priority: ${priority}")
+  curl "${args[@]}" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || true
+}
+
+_BRIEF_SUCCESS=false
+_on_exit() {
+  if [[ "${_BRIEF_SUCCESS}" == true ]]; then
+    _ntfy "✅ Daily brief printed"
+  else
+    _ntfy "❌ Daily brief failed" "high"
+  fi
+}
+trap _on_exit EXIT
+
 # ─── Environment ─────────────────────────────────────────────────────────────
 
 # Activate the Python venv (contains all dependencies)
@@ -105,6 +134,8 @@ if ! python print_brief.py; then
 fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
+
+_BRIEF_SUCCESS=true
 
 echo ""
 echo "════════════════════════════════════════"
