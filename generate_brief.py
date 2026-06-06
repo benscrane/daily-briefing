@@ -10,12 +10,12 @@ Output: DATA_DIR/YYYY-MM-DD/brief.md
 
 import os
 import re
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import anthropic
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -172,16 +172,39 @@ def main() -> None:
     prompt_path = out_dir / "prompt.txt"
     prompt_path.write_text(prompt)
 
-    print(f"[generate-brief] Invoking Claude API for {today}...")
+    print(f"[generate-brief] Invoking Claude Code for {today}...")
 
-    client = anthropic.Anthropic()
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4096,
-        messages=[{"role": "user", "content": prompt}],
-    )
+    try:
+        result = subprocess.run(
+            [
+                "claude",
+                "--print",
+                "--dangerously-skip-permissions",
+                "--bare",
+                "--model",
+                "claude-sonnet-4-6",
+                "-p",
+                prompt,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        print("[generate-brief] ERROR: Claude Code timed out after 5 minutes.", file=sys.stderr)
+        sys.exit(1)
 
-    brief = message.content[0].text.strip()
+    if result.returncode != 0:
+        print("[generate-brief] Claude Code failed:", file=sys.stderr)
+        print(f"  exit code: {result.returncode}", file=sys.stderr)
+        print(f"  stderr: {result.stderr[:500] if result.stderr else '(empty)'}", file=sys.stderr)
+        print(
+            f"  stdout: {result.stdout[:500] if result.stdout else '(empty)'}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    brief = re.sub(r"\x1B\[[0-9;]*[mGKHF]", "", result.stdout).strip()
 
     brief_path.write_text(brief)
     print(f"[generate-brief] ✓ Brief written to {brief_path}")
