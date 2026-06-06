@@ -24,10 +24,13 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output
 TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 
 
-def build_prompt(data_json: str, today: str) -> str:
+def build_prompt(data_json: str, today: str, weekday: str, is_weekend: bool) -> str:
+    day_kind = "WEEKEND" if is_weekend else "WEEKDAY"
     return f"""You are a sharp chief of staff running Ben's daily planning workflow.
+Ben reads this brief once in the morning, then acts on it directly in Todoist.
+Optimize for two things: fast skimming, and zero contradictions between sections.
 
-Today's date is {today}. Timezone: {TIMEZONE}.
+Today is {today} ({weekday}). This is a {day_kind}. Timezone: {TIMEZONE}.
 
 Below is the pre-fetched data for today: Todoist tasks and Google Calendar events.
 Do NOT call any external tools — all data you need is here.
@@ -39,108 +42,110 @@ Do NOT call any external tools — all data you need is here.
 <instructions>
 Produce Ben's daily brief using the following rules exactly.
 
-## Priority mapping
-Todoist's API returns priority as an integer where 4=P1 (urgent), 3=P2, 2=P3, 1=normal/P4.
-Always translate before display: API priority 4 → P1, 3 → P2, 2 → P3, 1 → P4.
+## Data handling
+- Priority: Todoist returns an integer. Translate before display: 4 → P1 (urgent), 3 → P2, 2 → P3, 1 → P4.
+- Projects: `todoist.projects` maps id → name. A task is Work if its project_id is in `todoist.workProjectIds`; otherwise Personal.
+- Labels: each task's `labels` array holds label names directly (e.g. "30min", "important"). "@important" means the label "important" is present. Use labels as-is.
+- Useful per-task fields: `priority`, `labels`, `due.date`, `due.string`, `due.is_recurring`, `deadline.date`, `duration`, `postponed_count`, `completed_count`, `added_at`. Only cite these when the data actually contains them — never invent a number.
 
-## Projects
-The `todoist.projects` map gives project id → name. Match each task's project_id to get its name.
-Tasks whose project_id appears in `todoist.workProjectIds` are Work. Everything else is Personal.
-
-## Labels
-Each task's `labels` array contains label names directly (e.g. "30min", "important"). Use them as-is.
-
-## Step 1: Understand the data
-- `todoist.todayAndOverdue` — tasks due today OR overdue (due_date < today)
+## Inputs
+- `todoist.todayAndOverdue` — tasks due today OR overdue (due.date < today)
 - `todoist.importantUndated` — @important tasks not due today/overdue (may have future due dates)
 - `calendar.today` — all events today (00:00–23:59)
-- `calendar.tomorrowAM` — events tomorrow 6 AM–11 AM (for prep-gap detection)
+- `calendar.tomorrowAM` — events tomorrow 6–11 AM (for prep-gap detection)
 
-## Step 2: Bucket and estimate
-Work = project_id in todoist.workProjectIds. Personal = everything else.
-
-Time estimates — apply in order:
-1. Labels: 15min / 30min / 1hour → use literally
-2. Heuristic by verb:
+## Time estimates (apply in order)
+1. Labels: 15min / 30min / 1hour → use literally.
+2. Verb heuristic:
    - submit / send / file / ping / repull → 15m
    - review / scope / check / pull / read → 30m
    - create / draft / build / write / work on → 60m
    - plan / put together / one-pager / proposal → 60–90m
-3. Truly ambiguous → 30m, flagged as ~30m?
+3. Truly ambiguous → ~30m.
+Mark `[overdue]` when due.date < today.
+Mark `[deadline expired YYYY-MM-DD (N days ago)]` when deadline.date < today. Compute N from today's date.
 
-Overdue = due.date < today → mark [overdue]
-Stale deadline = deadline.date < today → mark [deadline expired DATE]
+## WEEKEND vs WEEKDAY (today is {day_kind})
+WEEKDAY:
+- Surface all Work and all Personal tasks.
+- Include the Morning deep-work pick section.
+- Planning window: 9 AM–5 PM.
 
-## Step 3: Compute the day
-Working window: 9 AM–5 PM Central = 480 min.
-Meeting minutes = sum duration of opaque calendar events (transparency != "transparent") overlapping 9–5.
-Free minutes = 480 − meeting minutes.
-If meeting minutes > 240, subtract another 30 min (context-switch tax).
+WEEKEND:
+- Personal tasks: surface all of them, exactly like a weekday.
+- Work tasks: surface ONLY those that are @important OR P1. Every other work task (including overdue P2–P4) is held for Monday — do NOT list them individually. Instead add ONE line to Top of mind: "N work items held for Monday." (omit if N = 0).
+- NO Morning deep-work pick section — skip it entirely.
+- Planning window: 8 AM–6 PM.
 
-Deep-work block: longest contiguous gap between 6 AM and noon, counting:
-- Pre-9 AM transparent/self-scheduled blocks (Focus Time, etc.)
-- 9 AM onward gaps with no opaque event
+## Free time
+Free minutes = planning-window minutes − minutes of opaque timed events (transparency != "transparent") overlapping the window.
+WEEKDAY only: if opaque meeting minutes > 240, subtract another 30 min (context-switch tax).
+"Surfaced tasks" = the tasks you will actually list under Work + Personal after the weekend filter.
 
-## Step 4: Surface flags
-- Overcommitment: estimates > 1.25× free time → flag with numbers + drop list
-- Calendar/Todoist drift: for each all-day event, check if a task matches by shared proper nouns/acronyms
-- Stale deadlines
-- Tomorrow-AM prep gaps: external attendees, customer names, agenda gaps + Ben is speaker
-- Personal anchors: timed personal events (school pickup, appointments)
+## Top of mind (flags only — omit the whole section if there's nothing real)
+Include ONLY these flags. State each as a fact. Do NOT ask questions, do NOT recommend Todoist actions, do NOT flag missing tasks for bills/calendar events.
+- Overcommitment: surfaced-task estimates > 1.25× free time → "≈{{est}}m est vs {{free}}m free ({{x}}×)" plus 2–3 drop candidates (lowest priority / largest time).
+- Stale deadlines: any task with deadline.date < today → name it with the days-ago count.
+- Chronic postponers: any surfaced task with postponed_count ≥ 10 → "Task — postponed {{n}}×{{', recurring' if is_recurring}}." State it; let Ben decide.
+- (WEEKEND) the "N work items held for Monday" line.
+- Tomorrow-AM prep gap: a `calendar.tomorrowAM` event where Ben is the speaker or there are external/customer attendees AND no matching prep task exists today → one line.
 
-## Step 5: Pick morning deep-work item
-Walk tiebreakers:
-1. Calendar-linked P1 with external dependency due today
-2. P1 that fits the block size
+## Morning deep-work pick (WEEKDAY ONLY — skip on weekends)
+Pick by walking these tiebreakers:
+1. Calendar-linked P1 with an external dependency due today
+2. P1 that fits the morning block
 3. P1 + @important
 4. Any remaining P1
 5. P2 + @important (only if no P1s)
 6. Any @important
-Justify in one sentence.
+The pick MUST be the #1 item in the Work ranked list AND occupy the morning block in the timeline — all three sections must agree. Justify in one sentence. Block = the longest contiguous gap before noon (count pre-9 AM transparent/Focus blocks and any gap with no opaque event).
 
-## Step 6: Output format
-Use this exact structure:
+## Consistency rule (critical)
+The ranked lists are the single source of truth and carry ALL metadata (priority, @important, estimate, overdue/deadline flags).
+The timeline references tasks by SHORT NAME ONLY — no estimates, no flags, no priority repeated there.
+The timeline order, the rankings, and the deep-work pick must never contradict each other.
+
+## Output format
+Use this exact structure and section order. Omit a section only when noted.
 
 ```
-## Daily Prep — [Day, Date]
+## Daily Prep — {weekday}, [Month D]
 
-**[One-line: meeting load, free time, verdict.]**
+**[One line: day type, key anchors, free time, blunt verdict.]**
 
 ### Top of mind
-- [flags — omit section only if everything is clean]
+- [flags per rules above — omit section if nothing real]
 
-### Morning deep-work pick
+### Morning deep-work pick        [WEEKDAY ONLY — omit on weekends]
 **[Task]** — [why, one sentence]
-Block: [HH:MM–HH:MM] ([N] min)
-
-### Work — ranked
-1. **[Task]** [P1] [@important] (~30m) [overdue|deadline expired if applicable]
-2. ...
-
-### Personal — ranked
-1. **[Task]** (~15m)
-2. ...
+Block: HH:MM–HH:MM (N min)
 
 ### Today's calendar
-- HH:MM–HH:MM  [Event]  [flags]
-- ...
+- HH:MM–HH:MM  [Event]  ([location if any])
+- All day       [Event]
 
 ### Suggested timeline
-- HH:MM–HH:MM  Deep work: [pick]
-- HH:MM–HH:MM  [Meeting or Task]
+- HH:MM–HH:MM  [meeting / event / task short name]
 - ...
-- 5:00  Wrap
+- [wrap line appropriate to the day]
 
-### Undated @important (not slotted)
-- [Task] — slot today? (y/n)
+### Work — ranked
+1. **[Task]** [P1] [@important] (~30m) [overdue] [deadline expired ...]
+2. ...
+[WEEKEND: only @important/P1 work; if any were held, end with: _N other work items held for Monday._]
+
+### Personal — ranked
+1. **[Task]** (~15m) [overdue]
+2. ...
+
+### On the horizon
+- **[Task]** (due [Day Mon D], @important) — upcoming @important / future-dated items, heads-up only
 ```
 
 ## Tone
-Direct. No fluff. Short lines, bold names, skim-friendly.
-Push back on overcommitment with numbers, not vibes.
-If the day is light, say so.
-No emojis anywhere. This prints on paper in a monospaced font.
-
+Direct. No fluff. Short lines, bold names, skim-friendly. No emojis (prints on paper, monospaced).
+Push back on overcommitment with numbers, not vibes. If the day is light, say so plainly.
+When something is ambiguous, make the call and note the assumption in one short line — never end a line with a question.
 Do not add any preamble or postamble outside the brief format above.
 </instructions>"""
 
@@ -149,6 +154,8 @@ def main() -> None:
     tz = ZoneInfo(TIMEZONE)
     now = datetime.now(tz)
     today = now.strftime("%Y-%m-%d")
+    weekday = now.strftime("%A")
+    is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
 
     out_dir = DATA_DIR / today
     data_path = out_dir / "data.json"
@@ -160,7 +167,7 @@ def main() -> None:
         sys.exit(1)
 
     data_json = data_path.read_text()
-    prompt = build_prompt(data_json, today)
+    prompt = build_prompt(data_json, today, weekday, is_weekend)
 
     prompt_path = out_dir / "prompt.txt"
     prompt_path.write_text(prompt)
