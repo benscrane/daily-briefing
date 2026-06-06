@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import textwrap
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -28,6 +29,12 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output
 TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 PRINTER_NAME = os.environ.get("PRINTER_NAME", "")
 PRINTER_OPTIONS = os.environ.get("PRINTER_OPTIONS", "")
+# Total characters per printed line and how many spaces to indent on the left.
+# Content width = PRINT_LINE_WIDTH - PRINT_LEFT_MARGIN.
+PRINT_LINE_WIDTH = int(os.environ.get("PRINT_LINE_WIDTH", "72"))
+PRINT_LEFT_MARGIN = int(os.environ.get("PRINT_LEFT_MARGIN", "4"))
+
+_BOX_CHARS = frozenset("═─╔╗╚╝║")
 
 
 def markdown_to_text(md: str) -> str:
@@ -73,6 +80,37 @@ def add_print_wrapper(text: str, date: str) -> str:
     return banner + text + footer
 
 
+def wrap_for_print(text: str) -> str:
+    """Word-wrap text to fit the page and add a left margin.
+
+    Lines containing box-drawing characters (headers, banners) are passed
+    through unchanged.  Bullet lines get a hanging indent so the text of
+    long bullets aligns under the first word, not under the bullet marker.
+    Words are never split across lines.
+    """
+    indent = " " * PRINT_LEFT_MARGIN
+    content_width = PRINT_LINE_WIDTH - PRINT_LEFT_MARGIN
+    out = []
+    for line in text.splitlines():
+        # Box-drawing and blank lines pass through as-is.
+        if not line.strip() or _BOX_CHARS.intersection(line):
+            out.append(line)
+            continue
+        # Detect a leading bullet marker so continuation lines align under
+        # the text, not under the marker itself.
+        m = re.match(r"^([•\-\*]\s+)", line.lstrip())
+        subsequent = indent + " " * len(m.group(1)) if m else indent
+        out.append(textwrap.fill(
+            line.strip(),
+            width=content_width,
+            initial_indent=indent,
+            subsequent_indent=subsequent,
+            break_long_words=False,
+            break_on_hyphens=False,
+        ))
+    return "\n".join(out)
+
+
 def main() -> None:
     if not PRINTER_NAME:
         print("[print-brief] PRINTER_NAME not set in .env", file=sys.stderr)
@@ -94,7 +132,7 @@ def main() -> None:
 
     markdown = brief_path.read_text()
     plain_text = markdown_to_text(markdown)
-    print_ready = add_print_wrapper(plain_text, today)
+    print_ready = wrap_for_print(add_print_wrapper(plain_text, today))
 
     print_path.write_text(print_ready)
     print(f"[print-brief] Wrote print-ready text to {print_path}")
