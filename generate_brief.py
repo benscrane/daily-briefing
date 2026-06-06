@@ -2,26 +2,33 @@
 """
 generate_brief.py
 
-Reads today's data.json, builds a prompt, then invokes the `claude` CLI
-in --print mode to generate the brief.
+Reads today's data.json, builds a prompt, then calls Claude via the Amazon
+Bedrock Converse API to generate the brief.
 
 Output: DATA_DIR/YYYY-MM-DD/brief.md
 """
 
 import os
-import re
-import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import boto3
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from dotenv import load_dotenv
 
 load_dotenv()
 
 DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output"))
 TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
+
+# Bedrock config — BEDROCK_MODEL_ID uses the US cross-region inference profile
+# ("us." prefix) by default; override to experiment with other models.
+AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
+BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
+MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "4096"))
 
 
 def build_prompt(data_json: str, today: str, weekday: str, is_weekend: bool) -> str:
@@ -172,39 +179,25 @@ def main() -> None:
     prompt_path = out_dir / "prompt.txt"
     prompt_path.write_text(prompt)
 
-    print(f"[generate-brief] Invoking Claude Code for {today}...")
+    print(f"[generate-brief] Invoking Bedrock ({BEDROCK_MODEL_ID}) for {today}...")
+
+    client = boto3.client(
+        "bedrock-runtime",
+        region_name=AWS_REGION,
+        config=Config(read_timeout=300, retries={"max_attempts": 3}),
+    )
 
     try:
-        result = subprocess.run(
-            [
-                "claude",
-                "--print",
-                "--dangerously-skip-permissions",
-                "--bare",
-                "--model",
-                "claude-sonnet-4-6",
-                "-p",
-                prompt,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=300,
+        resp = client.converse(
+            modelId=BEDROCK_MODEL_ID,
+            messages=[{"role": "user", "content": [{"text": prompt}]}],
+            inferenceConfig={"maxTokens": MAX_TOKENS},
         )
-    except subprocess.TimeoutExpired:
-        print("[generate-brief] ERROR: Claude Code timed out after 5 minutes.", file=sys.stderr)
+    except (BotoCoreError, ClientError) as e:
+        print(f"[generate-brief] ERROR: Bedrock call failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    if result.returncode != 0:
-        print("[generate-brief] Claude Code failed:", file=sys.stderr)
-        print(f"  exit code: {result.returncode}", file=sys.stderr)
-        print(f"  stderr: {result.stderr[:500] if result.stderr else '(empty)'}", file=sys.stderr)
-        print(
-            f"  stdout: {result.stdout[:500] if result.stdout else '(empty)'}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    brief = re.sub(r"\x1B\[[0-9;]*[mGKHF]", "", result.stdout).strip()
+    brief = resp["output"]["message"]["content"][0]["text"].strip()
 
     brief_path.write_text(brief)
     print(f"[generate-brief] ✓ Brief written to {brief_path}")
