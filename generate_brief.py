@@ -45,7 +45,7 @@ Always translate before display: API priority 4 → P1, 3 → P2, 2 → P3, 1 �
 
 ## Projects
 The `todoist.projects` map gives project id → name. Match each task's project_id to get its name.
-Tasks in the project named "Redox" are Work. Everything else is Personal.
+Tasks whose project_id appears in `todoist.workProjectIds` are Work. Everything else is Personal.
 
 ## Labels
 Each task's `labels` array contains label names directly (e.g. "30min", "important"). Use them as-is.
@@ -57,7 +57,7 @@ Each task's `labels` array contains label names directly (e.g. "30min", "importa
 - `calendar.tomorrowAM` — events tomorrow 6 AM–11 AM (for prep-gap detection)
 
 ## Step 2: Bucket and estimate
-Work = Redox project. Personal = everything else.
+Work = project_id in todoist.workProjectIds. Personal = everything else.
 
 Time estimates — apply in order:
 1. Labels: 15min / 30min / 1hour → use literally
