@@ -14,9 +14,8 @@ to produce a daily brief in your usual daily-prep format, and prints it.
 On the Pi:
 
 ```bash
-# Node 18+
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-nvm install 20
+# Python 3.13 (ships with Pi OS Trixie)
+python3 --version
 
 # Claude Code
 npm install -g @anthropic-ai/claude-code
@@ -29,11 +28,13 @@ sudo apt install cups cups-client
 
 ## Setup
 
-### 1. Install dependencies
+### 1. Create venv and install dependencies
 
 ```bash
 cd ~/daily-brief
-npm install
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ### 2. Configure environment
@@ -47,7 +48,7 @@ Fill in:
 - `TODOIST_API_TOKEN` — from https://app.todoist.com/app/settings/integrations/developer
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — see Google OAuth setup below
 - `PRINTER_NAME` — run `lpstat -p` to find yours
-- `DATA_DIR` — where to store dated data/brief files (default: `./data`)
+- `DATA_DIR` — where to store dated data/brief files (default: `./brief_output`)
 - `TIMEZONE` — your local timezone (default: `America/Chicago`)
 
 ### 3. Google OAuth (one-time)
@@ -67,7 +68,8 @@ ssh -L 3456:localhost:3456 pi@<pi-ip>
 6. In a second terminal (SSH'd into the Pi), run the auth script:
 
 ```bash
-npx ts-node src/setup-gcal-auth.ts
+source venv/bin/activate
+python setup_gcal_auth.py
 ```
 
 7. Copy the URL it prints, open it in your Mac's browser, and authorize.
@@ -138,10 +140,12 @@ claude  # follow login prompts on first run
 ## Manual test run
 
 ```bash
+source venv/bin/activate
+
 # Test each step individually:
-npx ts-node src/fetch-data.ts
-npx ts-node src/generate-brief.ts
-npx ts-node src/print-brief.ts
+python fetch_data.py
+python generate_brief.py
+python print_brief.py
 
 # Or run the full pipeline:
 bash daily-brief.sh
@@ -171,12 +175,13 @@ Add one of these lines:
 30 6 * * * /home/pi/daily-brief/daily-brief.sh >> /home/pi/daily-brief/logs/cron.log 2>&1
 ```
 
-> **Note:** Cron runs in a minimal environment. The script sources nvm automatically,
-> but if `claude` or `node` still isn't found, add the full path:
+> **Note:** Cron runs in a minimal environment. The shell script activates the venv
+> automatically (`source venv/bin/activate`), so Python and all dependencies are on PATH.
+> If `claude` still isn't found, add its full path:
 > ```cron
-> PATH=/home/pi/.nvm/versions/node/v20.x.x/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+> PATH=/usr/local/bin:/usr/bin:/bin
 > ```
-> Check the path with `which claude` in a normal terminal session.
+> Check with `which claude` in a normal terminal session.
 
 ---
 
@@ -193,11 +198,11 @@ tail -f ~/daily-brief/logs/$(date +%Y-%m-%d).log
 
 ## Data retention
 
-Old files in `data/` accumulate over time. To keep the last 30 days:
+Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 
 ```bash
 # Add to crontab alongside the brief job:
-0 7 * * * find /home/pi/daily-brief/data -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+0 7 * * * find /home/pi/daily-brief/brief_output -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
 ```
 
 ---
@@ -206,8 +211,8 @@ Old files in `data/` accumulate over time. To keep the last 30 days:
 
 | Problem | Fix |
 |---------|-----|
-| `claude: command not found` in cron | Add full nvm path to cron PATH, see above |
+| `claude: command not found` in cron | Add full path to cron PATH, see above |
 | `No refresh token returned` in setup | Revoke app at https://myaccount.google.com/permissions and re-run |
 | Printer not found | Run `lpstat -p` and verify `PRINTER_NAME` matches exactly |
-| Brief is empty | Check `data/YYYY-MM-DD/prompt.txt` and `logs/YYYY-MM-DD.log` |
-| Google auth expired | Refresh tokens last indefinitely unless revoked; if it fails, re-run `setup-gcal-auth.ts` |
+| Brief is empty | Check `brief_output/YYYY-MM-DD/prompt.txt` and `logs/YYYY-MM-DD.log` |
+| Google auth expired | Refresh tokens last indefinitely unless revoked; if it fails, re-run `setup_gcal_auth.py` |
