@@ -48,23 +48,10 @@ echo "════════════════════════�
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/venv/bin/activate"
 
-# Cron runs with a stripped PATH that won't include npm global bin directories.
-# Prepend the most common install locations so tools like `claude` are found.
-# CLAUDE_PATH in .env can point to the exact binary as a last resort.
-export PATH="/usr/local/bin:${HOME}/.npm-global/bin:${HOME}/.npm/bin:${HOME}/.local/bin:${PATH}"
-for _nvm_bin in "${HOME}/.nvm/versions/node"/*/bin; do
-  [[ -d "${_nvm_bin}" ]] && export PATH="${_nvm_bin}:${PATH}"
-done
-unset _nvm_bin
-
-# If CLAUDE_PATH is set in .env, prepend its directory so it wins over any
-# other claude on PATH.
-if [[ -n "${CLAUDE_PATH:-}" ]]; then
-  export PATH="$(dirname "${CLAUDE_PATH}"):${PATH}"
-fi
+export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
 # Verify dependencies
-for cmd in python claude lp; do
+for cmd in python lp; do
   if ! command -v "${cmd}" &>/dev/null; then
     echo "ERROR: '${cmd}' not found in PATH. Aborting."
     echo "  python: check venv at ${SCRIPT_DIR}/venv"
