@@ -180,6 +180,7 @@ def main() -> None:
                 "claude",
                 "--print",
                 "--dangerously-skip-permissions",
+                "--bare",
                 "--model",
                 "claude-sonnet-4-6",
                 "-p",
