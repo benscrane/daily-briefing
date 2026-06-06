@@ -2,10 +2,10 @@
 
 Automated morning brief for the Raspberry Pi.
 
-**Pipeline:** Todoist + Google Calendar → Claude Code → network printer
+**Pipeline:** Todoist + Google Calendar → Claude via AWS Bedrock → network printer
 
-Runs on a cron schedule. Fetches your tasks and events, invokes Claude Code
-to produce a daily brief in your usual daily-prep format, and prints it.
+Runs on a cron schedule. Fetches your tasks and events, calls Claude on Amazon
+Bedrock to produce a daily brief in your usual daily-prep format, and prints it.
 
 ---
 
@@ -17,12 +17,14 @@ On the Pi:
 # Python 3.13 (ships with Pi OS Trixie)
 python3 --version
 
-# Claude Code
-npm install -g @anthropic-ai/claude-code
-
 # CUPS for printing
 sudo apt install cups cups-client
 ```
+
+An **AWS account** with Bedrock access is required. Enable model access for Claude Sonnet
+(or whichever model you want) in the [Bedrock console](https://console.aws.amazon.com/bedrock/)
+under **Model access**. Create an IAM user with `AmazonBedrockFullAccess` (or a scoped-down
+policy allowing `bedrock:InvokeModel` / `bedrock:Converse`) and note the access key and secret.
 
 ---
 
@@ -47,6 +49,9 @@ nano .env
 Fill in:
 - `TODOIST_API_TOKEN` — from https://app.todoist.com/app/settings/integrations/developer
 - `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` — see Google OAuth setup below
+- `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` — IAM credentials with Bedrock access
+- `AWS_REGION` — Bedrock region (default: `us-east-1`)
+- `BEDROCK_MODEL_ID` — model to use (default: `us.anthropic.claude-sonnet-4-6`); the `us.` prefix routes via the US cross-region inference profile
 - `PRINTER_NAME` — run `lpstat -p` to find yours
 - `DATA_DIR` — where to store dated data/brief files (default: `./brief_output`)
 - `TIMEZONE` — your local timezone (default: `America/Chicago`)
@@ -135,12 +140,6 @@ PRINTER_NAME=MyPrinter
 chmod +x ~/daily-briefing/daily-brief.sh
 ```
 
-### 6. Authenticate Claude Code
-
-```bash
-claude  # follow login prompts on first run
-```
-
 ---
 
 ## Manual test run
@@ -182,12 +181,9 @@ Add one of these lines:
 ```
 
 > **Note:** Cron runs in a minimal environment. The shell script activates the venv
-> automatically (`source venv/bin/activate`), so Python and all dependencies are on PATH.
-> If `claude` still isn't found, add its full path:
-> ```cron
-> PATH=/usr/local/bin:/usr/bin:/bin
-> ```
-> Check with `which claude` in a normal terminal session.
+> automatically (`source venv/bin/activate`), so Python and all dependencies (including
+> `boto3`) are on PATH. AWS credentials are read from `.env` via `set -a; source .env; set +a`
+> at the top of the script — no extra cron configuration needed.
 
 ---
 
@@ -218,7 +214,8 @@ Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 | Problem | Fix |
 |---------|-----|
 | `Permission denied` running the script | `chmod +x ~/daily-briefing/daily-brief.sh` |
-| `claude: command not found` in cron | Add full path to cron PATH, see above |
+| `Bedrock call failed: ... AccessDeniedException` | Verify IAM credentials and that model access is enabled in the Bedrock console |
+| `Bedrock call failed: ... ValidationException` | Check `BEDROCK_MODEL_ID` — the `us.` prefix is required for US cross-region inference profiles |
 | `No refresh token returned` in setup | Revoke app at https://myaccount.google.com/permissions and re-run |
 | Printer not found | Run `lpstat -p` and verify `PRINTER_NAME` matches exactly |
 | Brief is empty | Check `brief_output/YYYY-MM-DD/prompt.txt` and `logs/YYYY-MM-DD.log` |

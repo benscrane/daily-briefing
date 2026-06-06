@@ -4,7 +4,7 @@
 #
 # Orchestrates the full daily brief pipeline:
 #   1. fetch_data.py     — pull Todoist + Google Calendar
-#   2. generate_brief.py — invoke Claude Code to produce the brief
+#   2. generate_brief.py — call AWS Bedrock to produce the brief
 #   3. print_brief.py    — send to network printer
 #
 # Cron example (runs at 6:30 AM Mon–Fri):
@@ -73,32 +73,18 @@ trap _on_exit EXIT
 
 # ─── Environment ─────────────────────────────────────────────────────────────
 
-# Activate the Python venv (contains all dependencies)
+# Activate the Python venv (contains all dependencies, including boto3)
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/venv/bin/activate"
 
-# Cron runs with a stripped PATH that won't include npm global bin directories.
-# Prepend the most common install locations so tools like `claude` are found.
-# CLAUDE_PATH in .env can point to the exact binary as a last resort.
-export PATH="/usr/local/bin:${HOME}/.npm-global/bin:${HOME}/.npm/bin:${HOME}/.local/bin:${PATH}"
-for _nvm_bin in "${HOME}/.nvm/versions/node"/*/bin; do
-  [[ -d "${_nvm_bin}" ]] && export PATH="${_nvm_bin}:${PATH}"
-done
-unset _nvm_bin
-
-# If CLAUDE_PATH is set in .env, prepend its directory so it wins over any
-# other claude on PATH.
-if [[ -n "${CLAUDE_PATH:-}" ]]; then
-  export PATH="$(dirname "${CLAUDE_PATH}"):${PATH}"
-fi
+# Cron runs with a stripped PATH; prepend common tool locations.
+export PATH="/usr/local/bin:${HOME}/.local/bin:${PATH}"
 
 # Verify dependencies
-for cmd in python claude lp; do
+for cmd in python lp; do
   if ! command -v "${cmd}" &>/dev/null; then
     echo "ERROR: '${cmd}' not found in PATH. Aborting."
     echo "  python: check venv at ${SCRIPT_DIR}/venv"
-    echo "  claude: run 'which claude' in a normal shell to find the full path,"
-    echo "          then add CLAUDE_PATH=<that path> to .env"
     echo "  lp:     sudo apt install cups cups-client"
     exit 1
   fi
@@ -118,7 +104,7 @@ fi
 # ─── Step 2: Generate brief ───────────────────────────────────────────────────
 
 echo ""
-echo "── Step 2/3: Generating brief with Claude Code ──"
+echo "── Step 2/3: Generating brief via AWS Bedrock ──"
 if ! python generate_brief.py; then
   echo "ERROR: generate_brief.py failed. Aborting."
   exit 1
