@@ -47,7 +47,20 @@ def fetch_todoist() -> dict:
 
     projects_res = session.get(f"{base}/projects", params={"limit": 200})
     projects_res.raise_for_status()
-    projects = {p["id"]: p["name"] for p in projects_res.json()["results"]}
+    raw_projects = projects_res.json()["results"]
+    projects = {p["id"]: p["name"] for p in raw_projects}
+
+    redox_id = next((p["id"] for p in raw_projects if p["name"] == "Redox"), None)
+    work_ids: set[str] = set()
+    if redox_id:
+        work_ids.add(redox_id)
+        changed = True
+        while changed:
+            changed = False
+            for p in raw_projects:
+                if p["id"] not in work_ids and p.get("parent_id") in work_ids:
+                    work_ids.add(p["id"])
+                    changed = True
 
     labels_res = session.get(f"{base}/labels", params={"limit": 200})
     labels_res.raise_for_status()
@@ -73,6 +86,7 @@ def fetch_todoist() -> dict:
         "importantUndated": important_only,
         "projects": projects,
         "labels": labels,
+        "workProjectIds": sorted(work_ids),
     }
 
 
