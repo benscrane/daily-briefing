@@ -129,7 +129,13 @@ Replace `MyPrinter` with a short name you choose (no spaces) and `192.168.1.x` w
 PRINTER_NAME=MyPrinter
 ```
 
-### 5. Authenticate Claude Code
+### 5. Make the script executable
+
+```bash
+chmod +x ~/daily-briefing/daily-brief.sh
+```
+
+### 6. Authenticate Claude Code
 
 ```bash
 claude  # follow login prompts on first run
@@ -148,7 +154,7 @@ python generate_brief.py
 python print_brief.py
 
 # Or run the full pipeline:
-bash daily-brief.sh
+./daily-brief.sh
 ```
 
 Output files land in `$DATA_DIR/YYYY-MM-DD/`:
@@ -169,10 +175,10 @@ Add one of these lines:
 
 ```cron
 # Weekdays at 6:30 AM
-30 6 * * 1-5 /home/pi/daily-brief/daily-brief.sh >> /home/pi/daily-brief/logs/cron.log 2>&1
+30 6 * * 1-5 /home/belle/daily-briefing/daily-brief.sh
 
 # Every day at 6:30 AM
-30 6 * * * /home/pi/daily-brief/daily-brief.sh >> /home/pi/daily-brief/logs/cron.log 2>&1
+30 6 * * * /home/belle/daily-briefing/daily-brief.sh
 ```
 
 > **Note:** Cron runs in a minimal environment. The shell script activates the venv
@@ -187,11 +193,11 @@ Add one of these lines:
 
 ## Logs
 
-Each run logs to `logs/YYYY-MM-DD.log`. The cron output also appends to `logs/cron.log`.
+Each run logs to `logs/YYYY-MM-DD.log` inside the project directory. No redirect needed in the cron entry — the script handles its own logging via `tee`. If the `logs/` directory isn't writable the script falls back to `/tmp/daily-brief-logs/`.
 
 ```bash
 # Watch today's log
-tail -f ~/daily-brief/logs/$(date +%Y-%m-%d).log
+tail -f ~/daily-briefing/logs/$(date +%Y-%m-%d).log
 ```
 
 ---
@@ -211,6 +217,7 @@ Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 
 | Problem | Fix |
 |---------|-----|
+| `Permission denied` running the script | `chmod +x ~/daily-briefing/daily-brief.sh` |
 | `claude: command not found` in cron | Add full path to cron PATH, see above |
 | `No refresh token returned` in setup | Revoke app at https://myaccount.google.com/permissions and re-run |
 | Printer not found | Run `lpstat -p` and verify `PRINTER_NAME` matches exactly |
