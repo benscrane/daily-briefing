@@ -2,15 +2,18 @@
 """
 generate_brief.py
 
-Reads today's data.json, builds a prompt, then calls Claude via the Amazon
-Bedrock Converse API to generate the brief.
+Reads today's data.json, builds the work-task list, personal-task list, and
+calendar timeline directly from the data (deterministic — identical structure
+every day), then calls Claude via the Amazon Bedrock Converse API for a short
+recommendations note. Combines both into the final brief.
 
 Output: DATA_DIR/YYYY-MM-DD/brief.md
 """
 
+import json
 import os
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -28,132 +31,132 @@ TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 # ("us." prefix) by default; override to experiment with other models.
 AWS_REGION = os.environ.get("AWS_REGION", "us-east-1")
 BEDROCK_MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-sonnet-4-6")
-MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "4096"))
+MAX_TOKENS = int(os.environ.get("BEDROCK_MAX_TOKENS", "1024"))
+
+PRIORITY_LABELS = {4: "P1", 3: "P2", 2: "P3", 1: "P4"}
+
+# Time-estimate heuristic, applied in order: a matching label wins outright,
+# otherwise the task's leading verb picks a bucket, otherwise ~30m.
+LABEL_ESTIMATES = {"15min": 15, "30min": 30, "1hour": 60}
+VERB_ESTIMATES = (
+    (15, ("submit", "send", "file", "ping", "repull")),
+    (30, ("review", "scope", "check", "pull", "read")),
+    (60, ("create", "draft", "build", "write", "work on")),
+    (75, ("plan", "put together", "one-pager", "proposal")),
+)
 
 
-def build_prompt(data_json: str, today: str, weekday: str, is_weekend: bool) -> str:
-    day_kind = "WEEKEND" if is_weekend else "WEEKDAY"
-    return f"""You are a sharp chief of staff running Ben's daily planning workflow.
-Ben reads this brief once in the morning, then acts on it directly in Todoist.
-Optimize for two things: fast skimming, and zero contradictions between sections.
+def estimate_minutes(task: dict) -> int:
+    for label in task.get("labels") or []:
+        if label in LABEL_ESTIMATES:
+            return LABEL_ESTIMATES[label]
+    content = (task.get("content") or "").strip().lower()
+    for minutes, verbs in VERB_ESTIMATES:
+        if any(content.startswith(verb) for verb in verbs):
+            return minutes
+    return 30
 
-Today is {today} ({weekday}). This is a {day_kind}. Timezone: {TIMEZONE}.
 
-Below is the pre-fetched data for today: Todoist tasks and Google Calendar events.
-Do NOT call any external tools — all data you need is here.
+def format_task_line(task: dict, today: str) -> str:
+    flags = []
+
+    priority_label = PRIORITY_LABELS.get(task.get("priority"), "P4")
+    if priority_label != "P4":
+        flags.append(f"[{priority_label}]")
+    if "important" in (task.get("labels") or []):
+        flags.append("[@important]")
+    flags.append(f"(~{estimate_minutes(task)}m)")
+
+    due = task.get("due") or {}
+    if due.get("date") and due["date"] < today:
+        flags.append("[overdue]")
+
+    deadline = task.get("deadline") or {}
+    if deadline.get("date") and deadline["date"] < today:
+        days_ago = (date.fromisoformat(today) - date.fromisoformat(deadline["date"])).days
+        flags.append(f"[deadline expired {deadline['date']} ({days_ago} days ago)]")
+
+    return f"- **{task['content']}** " + " ".join(flags)
+
+
+def render_task_list(title: str, tasks: list[dict], today: str) -> str:
+    lines = [f"### {title}"]
+    if not tasks:
+        lines.append("- Nothing scheduled.")
+    else:
+        ranked = sorted(tasks, key=lambda t: (-(t.get("priority") or 1), t.get("content") or ""))
+        lines.extend(format_task_line(t, today) for t in ranked)
+    return "\n".join(lines)
+
+
+def format_event_line(event: dict, tz: ZoneInfo) -> str:
+    summary = event.get("summary", "(untitled)")
+    location = event.get("location", "")
+    start = event.get("start", {})
+    end = event.get("end", {})
+
+    if "dateTime" in start:
+        start_dt = datetime.fromisoformat(start["dateTime"]).astimezone(tz)
+        end_dt = datetime.fromisoformat(end["dateTime"]).astimezone(tz)
+        line = f"- {start_dt:%H:%M}–{end_dt:%H:%M}  {summary}"
+    else:
+        line = f"- All day       {summary}"
+
+    if location:
+        line += f"  ({location})"
+    return line
+
+
+def render_timeline(events: list[dict], tz: ZoneInfo) -> str:
+    lines = ["### Today's schedule"]
+    if not events:
+        lines.append("- Nothing on the calendar.")
+    else:
+        lines.extend(format_event_line(e, tz) for e in events)
+    return "\n".join(lines)
+
+
+def build_recommendations_prompt(data_json: str, today: str, weekday: str, sections: str) -> str:
+    return f"""You are Ben's executive assistant writing the recommendations note at the bottom of his daily brief.
+
+Today is {today} ({weekday}). Timezone: {TIMEZONE}.
+
+The work-task list, personal-task list, and calendar timeline below are FINAL — they were already
+built and printed elsewhere in the brief. Do not repeat them, reformat them, or contradict them.
+
+<finalized-sections>
+{sections}
+</finalized-sections>
+
+Here is the full underlying data, for numbers and details not shown above (postponed_count,
+deadline dates, tomorrow's morning calendar, transparency, etc.):
 
 <data>
 {data_json}
 </data>
 
 <instructions>
-Produce Ben's daily brief using the following rules exactly.
+Write ONLY a short, direct recommendations note — at most 5 bullets. Skip anything that doesn't
+genuinely apply; a light day should produce a short note, not padding. Never invent a number —
+only cite figures that actually appear in the data.
 
-## Data handling
-- Priority: Todoist returns an integer. Translate before display: 4 → P1 (urgent), 3 → P2, 2 → P3, 1 → P4.
-- Projects: `todoist.projects` maps id → name. A task is Work if its project_id is in `todoist.workProjectIds`; otherwise Personal.
-- Labels: each task's `labels` array holds label names directly (e.g. "30min", "important"). "@important" means the label "important" is present. Use labels as-is.
-- Useful per-task fields: `priority`, `labels`, `due.date`, `due.string`, `due.is_recurring`, `deadline.date`, `duration`, `postponed_count`, `completed_count`, `added_at`. Only cite these when the data actually contains them — never invent a number.
+Consider, in rough priority order:
+- Overcommitment: if the listed tasks' estimated minutes clearly exceed the free time between
+  today's opaque (transparency != "transparent") calendar events, say so with the numbers and name
+  1-2 drop candidates (lowest priority / largest estimate, both already in the lists above).
+- What to tackle first, and why — one sentence, pointing at a specific task already in the lists above.
+- Stale deadlines: any task where deadline.date is before {today} — name it with the days-ago count.
+- Chronic postponers: any task with postponed_count >= 10 — name it with the count.
+- Tomorrow-AM prep gap: a calendar.tomorrowAM event where Ben is presenting or external/customer
+  attendees are present, and no matching prep task exists in today's lists — flag it in one line.
 
-## Inputs
-- `todoist.todayAndOverdue` — tasks due today OR overdue (due.date < today)
-- `todoist.importantUndated` — @important tasks not due today/overdue (may have future due dates)
-- `calendar.today` — all events today (00:00–23:59)
-- `calendar.tomorrowAM` — events tomorrow 6–11 AM (for prep-gap detection)
+Output format — exactly this, nothing else:
 
-## Time estimates (apply in order)
-1. Labels: 15min / 30min / 1hour → use literally.
-2. Verb heuristic:
-   - submit / send / file / ping / repull → 15m
-   - review / scope / check / pull / read → 30m
-   - create / draft / build / write / work on → 60m
-   - plan / put together / one-pager / proposal → 60–90m
-3. Truly ambiguous → ~30m.
-Mark `[overdue]` when due.date < today.
-Mark `[deadline expired YYYY-MM-DD (N days ago)]` when deadline.date < today. Compute N from today's date.
-
-## WEEKEND vs WEEKDAY (today is {day_kind})
-WEEKDAY:
-- Surface all Work and all Personal tasks.
-- Include the Morning deep-work pick section.
-- Planning window: 9 AM–5 PM.
-
-WEEKEND:
-- Personal tasks: surface all of them, exactly like a weekday.
-- Work tasks: surface ONLY those that are @important OR P1. Every other work task (including overdue P2–P4) is held for Monday — do NOT list them individually. Instead add ONE line to Top of mind: "N work items held for Monday." (omit if N = 0).
-- NO Morning deep-work pick section — skip it entirely.
-- Planning window: 8 AM–6 PM.
-
-## Free time
-Free minutes = planning-window minutes − minutes of opaque timed events (transparency != "transparent") overlapping the window.
-WEEKDAY only: if opaque meeting minutes > 240, subtract another 30 min (context-switch tax).
-"Surfaced tasks" = the tasks you will actually list under Work + Personal after the weekend filter.
-
-## Top of mind (flags only — omit the whole section if there's nothing real)
-Include ONLY these flags. State each as a fact. Do NOT ask questions, do NOT recommend Todoist actions, do NOT flag missing tasks for bills/calendar events.
-- Overcommitment: surfaced-task estimates > 1.25× free time → "≈{{est}}m est vs {{free}}m free ({{x}}×)" plus 2–3 drop candidates (lowest priority / largest time).
-- Stale deadlines: any task with deadline.date < today → name it with the days-ago count.
-- Chronic postponers: any surfaced task with postponed_count ≥ 10 → "Task — postponed {{n}}×{{', recurring' if is_recurring}}." State it; let Ben decide.
-- (WEEKEND) the "N work items held for Monday" line.
-- Tomorrow-AM prep gap: a `calendar.tomorrowAM` event where Ben is the speaker or there are external/customer attendees AND no matching prep task exists today → one line.
-
-## Morning deep-work pick (WEEKDAY ONLY — skip on weekends)
-Pick by walking these tiebreakers:
-1. Calendar-linked P1 with an external dependency due today
-2. P1 that fits the morning block
-3. P1 + @important
-4. Any remaining P1
-5. P2 + @important (only if no P1s)
-6. Any @important
-The pick MUST be the #1 item in the Work ranked list AND occupy the morning block in the timeline — all three sections must agree. Justify in one sentence. Block = the longest contiguous gap before noon (count pre-9 AM transparent/Focus blocks and any gap with no opaque event).
-
-## Consistency rule (critical)
-The ranked lists are the single source of truth and carry ALL metadata (priority, @important, estimate, overdue/deadline flags).
-The timeline references tasks by SHORT NAME ONLY — no estimates, no flags, no priority repeated there.
-The timeline order, the rankings, and the deep-work pick must never contradict each other.
-
-## Output format
-Use this exact structure and section order. Omit a section only when noted.
-
-```
-## Daily Prep — {weekday}, [Month D]
-
-**[One line: day type, key anchors, free time, blunt verdict.]**
-
-### Top of mind
-- [flags per rules above — omit section if nothing real]
-
-### Morning deep-work pick        [WEEKDAY ONLY — omit on weekends]
-**[Task]** — [why, one sentence]
-Block: HH:MM–HH:MM (N min)
-
-### Today's calendar
-- HH:MM–HH:MM  [Event]  ([location if any])
-- All day       [Event]
-
-### Suggested timeline
-- HH:MM–HH:MM  [meeting / event / task short name]
+### Recommendations
 - ...
-- [wrap line appropriate to the day]
+- ...
 
-### Work — ranked
-1. **[Task]** [P1] [@important] (~30m) [overdue] [deadline expired ...]
-2. ...
-[WEEKEND: only @important/P1 work; if any were held, end with: _N other work items held for Monday._]
-
-### Personal — ranked
-1. **[Task]** (~15m) [overdue]
-2. ...
-
-### On the horizon
-- **[Task]** (due [Day Mon D], @important) — upcoming @important / future-dated items, heads-up only
-```
-
-## Tone
-Direct. No fluff. Short lines, bold names, skim-friendly. No emojis (prints on paper, monospaced).
-Push back on overcommitment with numbers, not vibes. If the day is light, say so plainly.
-When something is ambiguous, make the call and note the assumption in one short line — never end a line with a question.
-Do not add any preamble or postamble outside the brief format above.
+Tone: blunt, specific, skim-friendly. No questions, no preamble, no closing remarks, no emojis.
 </instructions>"""
 
 
@@ -162,7 +165,6 @@ def main() -> None:
     now = datetime.now(tz)
     today = now.strftime("%Y-%m-%d")
     weekday = now.strftime("%A")
-    is_weekend = now.weekday() >= 5  # Saturday=5, Sunday=6
 
     out_dir = DATA_DIR / today
     data_path = out_dir / "data.json"
@@ -174,8 +176,20 @@ def main() -> None:
         sys.exit(1)
 
     data_json = data_path.read_text()
-    prompt = build_prompt(data_json, today, weekday, is_weekend)
+    data = json.loads(data_json)
 
+    todoist = data["todoist"]
+    work_ids = set(todoist.get("workProjectIds") or [])
+    tasks = todoist.get("todayAndOverdue") or []
+    work_tasks = [t for t in tasks if t.get("project_id") in work_ids]
+    personal_tasks = [t for t in tasks if t.get("project_id") not in work_ids]
+
+    work_section = render_task_list("Work tasks", work_tasks, today)
+    personal_section = render_task_list("Personal tasks", personal_tasks, today)
+    timeline_section = render_timeline(data["calendar"].get("today") or [], tz)
+    sections = "\n\n".join([work_section, personal_section, timeline_section])
+
+    prompt = build_recommendations_prompt(data_json, today, weekday, sections)
     prompt_path = out_dir / "prompt.txt"
     prompt_path.write_text(prompt)
 
@@ -197,7 +211,10 @@ def main() -> None:
         print(f"[generate-brief] ERROR: Bedrock call failed: {e}", file=sys.stderr)
         sys.exit(1)
 
-    brief = resp["output"]["message"]["content"][0]["text"].strip()
+    recommendations = resp["output"]["message"]["content"][0]["text"].strip()
+
+    header = f"## Daily Prep — {weekday}, {now.strftime('%B %-d')}"
+    brief = "\n\n".join([header, work_section, personal_section, timeline_section, recommendations])
 
     brief_path.write_text(brief)
     print(f"[generate-brief] ✓ Brief written to {brief_path}")
