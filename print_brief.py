@@ -40,13 +40,12 @@ _BOX_CHARS = frozenset("═─╔╗╚╝║")
 def markdown_to_text(md: str) -> str:
     def h2_replace(m: re.Match) -> str:
         title = m.group(1)
-        line = "═" * min(len(title) + 2, 60)
-        return f"\n{line}\n  {title.upper()}\n{line}"
+        return f"\n{title.upper()}"
 
     def h3_replace(m: re.Match) -> str:
         title = m.group(1)
         line = "─" * min(len(title) + 2, 50)
-        return f"\n{title}\n{line}"
+        return f"\n{title}\n{' ' * PRINT_LEFT_MARGIN}{line}"
 
     text = re.sub(r"^## (.+)$", h2_replace, md, flags=re.MULTILINE)
     text = re.sub(r"^### (.+)$", h3_replace, text, flags=re.MULTILINE)
@@ -69,14 +68,7 @@ def add_print_wrapper(text: str, date: str) -> str:
         "",
     ])
 
-    footer = "\n".join([
-        "",
-        "",
-        f"{date}",
-        "",
-    ])
-
-    return banner + text + footer
+    return banner + text
 
 
 def wrap_for_print(text: str) -> str:
