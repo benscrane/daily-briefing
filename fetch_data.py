@@ -16,6 +16,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -43,6 +45,13 @@ def _require(name: str, val: str) -> None:
 def fetch_todoist() -> dict:
     session = requests.Session()
     session.headers["Authorization"] = f"Bearer {TODOIST_TOKEN}"
+    retry = Retry(
+        total=4,
+        backoff_factor=15,  # waits 15, 30, 60, 120s between retries
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["GET"],
+    )
+    session.mount("https://", HTTPAdapter(max_retries=retry))
     base = "https://api.todoist.com/api/v1"
 
     projects_res = session.get(f"{base}/projects", params={"limit": 200})
@@ -190,6 +199,9 @@ def main() -> None:
 if __name__ == "__main__":
     try:
         main()
+    except requests.exceptions.RetryError as e:
+        print(f"[fetch-data] RETRY EXHAUSTED: {e}", file=sys.stderr)
+        sys.exit(1)
     except requests.HTTPError as e:
         print(f"[fetch-data] HTTP ERROR: {e}", file=sys.stderr)
         if e.response is not None:
