@@ -19,6 +19,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
+from google.auth.exceptions import RefreshError
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
@@ -201,6 +202,16 @@ if __name__ == "__main__":
         main()
     except requests.exceptions.RetryError as e:
         print(f"[fetch-data] RETRY EXHAUSTED: {e}", file=sys.stderr)
+        sys.exit(1)
+    except RefreshError as e:
+        print(f"[fetch-data] GOOGLE AUTH ERROR: {e}", file=sys.stderr)
+        print(
+            "[fetch-data] Google rejected the stored refresh token. This usually means "
+            "it expired (OAuth apps in 'Testing' status expire tokens after 7 days) or "
+            "was revoked. Publish the app to Production in the Google Cloud console, "
+            "then re-run setup_gcal_auth.py to get a new token.",
+            file=sys.stderr,
+        )
         sys.exit(1)
     except requests.HTTPError as e:
         print(f"[fetch-data] HTTP ERROR: {e}", file=sys.stderr)
