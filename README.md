@@ -219,4 +219,4 @@ Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 | `No refresh token returned` in setup | Revoke app at https://myaccount.google.com/permissions and re-run |
 | Printer not found | Run `lpstat -p` and verify `PRINTER_NAME` matches exactly |
 | Brief is empty | Check `brief_output/YYYY-MM-DD/prompt.txt` and `logs/YYYY-MM-DD.log` |
-| Google auth expired | Refresh tokens last indefinitely unless revoked; if it fails, re-run `setup_gcal_auth.py` |
+| `invalid_grant` / Google auth expired | If the OAuth app is in **Testing** status, refresh tokens expire after 7 days — publish it to Production (OAuth consent screen in the Google Cloud console). Then re-run `setup_gcal_auth.py` for a fresh token |
