@@ -5,3 +5,5 @@ node_modules/
 dist/
 .claude/settings.local.json
 venv/
+__pycache__/
+*.pyc

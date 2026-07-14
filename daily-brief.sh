@@ -3,9 +3,14 @@
 # daily-brief.sh
 #
 # Orchestrates the full daily brief pipeline:
+#   0. check_skip.py     — check Google Calendar for a "No Brief" event
 #   1. fetch_data.py     — pull Todoist + Google Calendar
 #   2. generate_brief.py — call AWS Bedrock to produce the brief
 #   3. print_brief.py    — send to network printer
+#
+# To skip a day, add an event titled "No Brief" (case-insensitive) to any of
+# the calendars listed in config.json. Override the title via SKIP_EVENT_TITLE
+# in .env.
 #
 # Cron example (runs at 6:30 AM Mon–Fri):
 #   30 6 * * 1-5 /home/pi/daily-brief/daily-brief.sh
@@ -61,13 +66,13 @@ _ntfy() {
   curl "${args[@]}" "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || true
 }
 
-_BRIEF_SUCCESS=false
+_BRIEF_STATE="failed"
 _on_exit() {
-  if [[ "${_BRIEF_SUCCESS}" == true ]]; then
-    _ntfy "✅ Daily brief printed"
-  else
-    _ntfy "❌ Daily brief failed" "high"
-  fi
+  case "${_BRIEF_STATE}" in
+    success) _ntfy "✅ Daily brief printed" ;;
+    skipped) _ntfy "⏭️ Daily brief skipped (No Brief event)" ;;
+    *)       _ntfy "❌ Daily brief failed" "high" ;;
+  esac
 }
 trap _on_exit EXIT
 
@@ -91,6 +96,22 @@ for cmd in python lp; do
 done
 
 cd "${SCRIPT_DIR}"
+
+# ─── Step 0: Check for skip event ─────────────────────────────────────────────
+
+echo ""
+echo "── Step 0/3: Checking for a \"No Brief\" event ──"
+if python check_skip.py; then
+  : # no skip event — proceed with the pipeline
+else
+  SKIP_EXIT=$?
+  if [[ ${SKIP_EXIT} -eq 2 ]]; then
+    _BRIEF_STATE="skipped"
+    exit 0
+  fi
+  echo "ERROR: check_skip.py failed. Aborting."
+  exit 1
+fi
 
 # ─── Step 1: Fetch data ───────────────────────────────────────────────────────
 
@@ -121,7 +142,7 @@ fi
 
 # ─── Done ─────────────────────────────────────────────────────────────────────
 
-_BRIEF_SUCCESS=true
+_BRIEF_STATE="success"
 
 echo ""
 echo "════════════════════════════════════════"

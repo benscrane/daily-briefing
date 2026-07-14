@@ -20,8 +20,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from dotenv import load_dotenv
 from google.auth.exceptions import RefreshError
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
+
+from gcal_client import build_calendar_service
 
 load_dotenv()
 
@@ -101,15 +101,7 @@ def fetch_todoist() -> dict:
 
 
 def fetch_calendar(today: str, tomorrow: str) -> dict:
-    creds = Credentials(
-        token=None,
-        refresh_token=GOOGLE_REFRESH_TOKEN,
-        client_id=GOOGLE_CLIENT_ID,
-        client_secret=GOOGLE_CLIENT_SECRET,
-        token_uri="https://oauth2.googleapis.com/token",
-        scopes=["https://www.googleapis.com/auth/calendar.readonly"],
-    )
-    service = build("calendar", "v3", credentials=creds)
+    service = build_calendar_service()
 
     tz = ZoneInfo(TIMEZONE)
     today_start = datetime.fromisoformat(f"{today}T00:00:00").replace(tzinfo=tz).isoformat()
