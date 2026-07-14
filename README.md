@@ -7,6 +7,9 @@ Automated morning brief for the Raspberry Pi.
 Runs on a cron schedule. Fetches your tasks and events, calls Claude on Amazon
 Bedrock to produce a daily brief in your usual daily-prep format, and prints it.
 
+Add a calendar event titled **"No Brief"** on any day and the whole pipeline
+(fetch, AI, print) is skipped for that day — see [Skipping a day](#skipping-a-day).
+
 ---
 
 ## Prerequisites
@@ -148,6 +151,7 @@ chmod +x ~/daily-briefing/daily-brief.sh
 source venv/bin/activate
 
 # Test each step individually:
+python check_skip.py
 python fetch_data.py
 python generate_brief.py
 python print_brief.py
@@ -161,6 +165,32 @@ Output files land in `$DATA_DIR/YYYY-MM-DD/`:
 - `prompt.txt` — prompt sent to Claude
 - `brief.md` — generated brief (markdown)
 - `brief.txt` — print-ready plain text
+
+---
+
+## Skipping a day
+
+To skip the brief entirely on a given day — travel, PTO, whatever — add an
+event titled **"No Brief"** (case-insensitive) to any calendar listed in
+`config.json`'s `calendarIds`. It can be an all-day event or a timed one;
+only the title and the date matter.
+
+`check_skip.py` runs as step 0 of `daily-brief.sh`, before Todoist or Bedrock
+are touched. If it finds a match for today, the whole pipeline (fetch, AI,
+print) is skipped, a `⏭️ Daily brief skipped` ntfy notification is sent instead
+of the usual success/failure one, and the script exits 0.
+
+The event title is configurable via `SKIP_EVENT_TITLE` in `.env` if you'd
+rather use something else (e.g. `OOO`).
+
+Test it directly:
+
+```bash
+source venv/bin/activate
+python check_skip.py
+# exit 0 = proceed, exit 2 = skip event found, exit 1 = error checking the calendar
+echo $?
+```
 
 ---
 
@@ -220,3 +250,5 @@ Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 | Printer not found | Run `lpstat -p` and verify `PRINTER_NAME` matches exactly |
 | Brief is empty | Check `brief_output/YYYY-MM-DD/prompt.txt` and `logs/YYYY-MM-DD.log` |
 | `invalid_grant` / Google auth expired | If the OAuth app is in **Testing** status, refresh tokens expire after 7 days — publish it to Production (OAuth consent screen in the Google Cloud console). Then re-run `setup_gcal_auth.py` for a fresh token |
+| Brief didn't skip despite a "No Brief" event | Check the event's title matches `SKIP_EVENT_TITLE` exactly (case-insensitive) and that it's on a calendar listed in `config.json`'s `calendarIds` |
+| Brief skipped unexpectedly | Check `logs/YYYY-MM-DD.log` for `check_skip.py` output — a stray event titled "No Brief" on a shared/subscribed calendar in `calendarIds` will also trigger it |
