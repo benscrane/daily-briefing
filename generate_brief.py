@@ -14,18 +14,13 @@ import json
 import os
 import sys
 from datetime import date, datetime
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import boto3
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
-from dotenv import load_dotenv
 
-load_dotenv()
-
-DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output"))
-TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
+from common import DATA_DIR, TIMEZONE, TZ, brief_date, brief_now
 
 # Bedrock config — BEDROCK_MODEL_ID uses the US cross-region inference profile
 # ("us." prefix) by default; override to experiment with other models.
@@ -161,10 +156,10 @@ Tone: blunt, specific, skim-friendly. No questions, no preamble, no closing rema
 
 
 def main() -> None:
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    today = now.strftime("%Y-%m-%d")
-    weekday = now.strftime("%A")
+    now = brief_now()
+    today = brief_date()
+    brief_day = date.fromisoformat(today)
+    weekday = brief_day.strftime("%A")
 
     out_dir = DATA_DIR / today
     data_path = out_dir / "data.json"
@@ -186,7 +181,7 @@ def main() -> None:
 
     work_section = render_task_list("Work tasks", work_tasks, today)
     personal_section = render_task_list("Personal tasks", personal_tasks, today)
-    timeline_section = render_timeline(data["calendar"].get("today") or [], tz)
+    timeline_section = render_timeline(data["calendar"].get("today") or [], TZ)
     sections = "\n\n".join([work_section, personal_section, timeline_section])
 
     prompt = build_recommendations_prompt(data_json, today, weekday, sections)
@@ -213,7 +208,8 @@ def main() -> None:
 
     recommendations = resp["output"]["message"]["content"][0]["text"].strip()
 
-    header = f"## Daily Prep — {weekday}, {now.strftime('%B %-d')}"
+    generated_at = now.strftime("%-I:%M %p")
+    header = f"## Daily Brief — {weekday}, {brief_day.strftime('%B %-d, %Y')}\nGenerated at {generated_at}"
     brief = "\n\n".join([header, work_section, personal_section, timeline_section, recommendations])
 
     brief_path.write_text(brief)

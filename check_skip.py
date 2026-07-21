@@ -17,17 +17,13 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 
+from common import TZ, brief_date
 from gcal_client import build_calendar_service
 
-load_dotenv()
-
-TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 SKIP_EVENT_TITLE = os.environ.get("SKIP_EVENT_TITLE", "No Brief")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
@@ -46,9 +42,8 @@ def _require(name: str, val: str) -> None:
 
 def has_skip_event(today: str) -> bool:
     service = build_calendar_service()
-    tz = ZoneInfo(TIMEZONE)
-    time_min = datetime.fromisoformat(f"{today}T00:00:00").replace(tzinfo=tz).isoformat()
-    time_max = datetime.fromisoformat(f"{today}T23:59:59").replace(tzinfo=tz).isoformat()
+    time_min = datetime.fromisoformat(f"{today}T00:00:00").replace(tzinfo=TZ).isoformat()
+    time_max = datetime.fromisoformat(f"{today}T23:59:59").replace(tzinfo=TZ).isoformat()
 
     target = SKIP_EVENT_TITLE.strip().casefold()
 
@@ -76,8 +71,7 @@ def main() -> None:
     _require("GOOGLE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
     _require("GOOGLE_REFRESH_TOKEN", GOOGLE_REFRESH_TOKEN)
 
-    tz = ZoneInfo(TIMEZONE)
-    today = datetime.now(tz).strftime("%Y-%m-%d")
+    today = brief_date()
 
     if has_skip_event(today):
         print(f'[check-skip] "{SKIP_EVENT_TITLE}" event found for {today} — skipping brief.')

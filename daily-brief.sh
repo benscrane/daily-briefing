@@ -97,6 +97,12 @@ done
 
 cd "${SCRIPT_DIR}"
 
+# Pin the run date once so every step reads/writes the same DATA_DIR folder
+# even if the pipeline crosses midnight. Pre-set BRIEF_DATE to backfill a
+# past date: BRIEF_DATE=2026-07-20 ./daily-brief.sh
+BRIEF_DATE="$(python -c 'from common import brief_date; print(brief_date())')"
+export BRIEF_DATE
+
 # ─── Step 0: Check for skip event ─────────────────────────────────────────────
 
 echo ""

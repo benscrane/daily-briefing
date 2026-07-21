@@ -17,24 +17,15 @@ import re
 import subprocess
 import sys
 import textwrap
-from datetime import datetime
-from pathlib import Path
-from zoneinfo import ZoneInfo
 
-from dotenv import load_dotenv
+from common import DATA_DIR, brief_date
 
-load_dotenv()
-
-DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output"))
-TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 PRINTER_NAME = os.environ.get("PRINTER_NAME", "")
 PRINTER_OPTIONS = os.environ.get("PRINTER_OPTIONS", "")
 # Total characters per printed line and how many spaces to indent on the left.
 # Content width = PRINT_LINE_WIDTH - PRINT_LEFT_MARGIN.
 PRINT_LINE_WIDTH = int(os.environ.get("PRINT_LINE_WIDTH", "72"))
 PRINT_LEFT_MARGIN = int(os.environ.get("PRINT_LEFT_MARGIN", "4"))
-
-_BOX_CHARS = frozenset("═─╔╗╚╝║")
 
 
 def markdown_to_text(md: str) -> str:
@@ -57,20 +48,6 @@ def markdown_to_text(md: str) -> str:
     return text.strip()
 
 
-def add_print_wrapper(text: str, date: str) -> str:
-    now = datetime.now(ZoneInfo(TIMEZONE))
-    printed_at = now.strftime("%-I:%M %p")
-
-    banner = "\n".join([
-        f"DAILY BRIEF — {date}",
-        f"Printed at {printed_at}",
-        "",
-        "",
-    ])
-
-    return banner + text
-
-
 def wrap_for_print(text: str) -> str:
     """Word-wrap text to fit the page and add a left margin.
 
@@ -84,7 +61,7 @@ def wrap_for_print(text: str) -> str:
     out = []
     for line in text.splitlines():
         # Box-drawing and blank lines pass through as-is.
-        if not line.strip() or _BOX_CHARS.intersection(line):
+        if not line.strip():
             out.append(line)
             continue
         # Detect a leading bullet marker so continuation lines align under
@@ -108,9 +85,7 @@ def main() -> None:
         print("[print-brief] Run `lpstat -p` to find your printer name.", file=sys.stderr)
         sys.exit(1)
 
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    today = now.strftime("%Y-%m-%d")
+    today = brief_date()
 
     out_dir = DATA_DIR / today
     brief_path = out_dir / "brief.md"
@@ -123,7 +98,7 @@ def main() -> None:
 
     markdown = brief_path.read_text()
     plain_text = markdown_to_text(markdown)
-    print_ready = wrap_for_print(add_print_wrapper(plain_text, today))
+    print_ready = "\n" + wrap_for_print(plain_text)
 
     print_path.write_text(print_ready)
     print(f"[print-brief] Wrote print-ready text to {print_path}")

@@ -11,26 +11,21 @@ Output: DATA_DIR/YYYY-MM-DD/data.json
 import json
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from dotenv import load_dotenv
 from google.auth.exceptions import RefreshError
 
+from common import DATA_DIR, TIMEZONE, TZ, brief_date
 from gcal_client import build_calendar_service
-
-load_dotenv()
 
 TODOIST_TOKEN = os.environ.get("TODOIST_API_TOKEN", "")
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", "")
 GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN", "")
-DATA_DIR = Path(os.environ.get("DATA_DIR", Path(__file__).parent / "brief_output"))
-TIMEZONE = os.environ.get("TIMEZONE", "America/Chicago")
 
 CONFIG_PATH = Path(__file__).parent / "config.json"
 config = json.loads(CONFIG_PATH.read_text())
@@ -103,11 +98,10 @@ def fetch_todoist() -> dict:
 def fetch_calendar(today: str, tomorrow: str) -> dict:
     service = build_calendar_service()
 
-    tz = ZoneInfo(TIMEZONE)
-    today_start = datetime.fromisoformat(f"{today}T00:00:00").replace(tzinfo=tz).isoformat()
-    today_end = datetime.fromisoformat(f"{today}T23:59:59").replace(tzinfo=tz).isoformat()
-    tomorrow_start = datetime.fromisoformat(f"{tomorrow}T06:00:00").replace(tzinfo=tz).isoformat()
-    tomorrow_end = datetime.fromisoformat(f"{tomorrow}T11:00:00").replace(tzinfo=tz).isoformat()
+    today_start = datetime.fromisoformat(f"{today}T00:00:00").replace(tzinfo=TZ).isoformat()
+    today_end = datetime.fromisoformat(f"{today}T23:59:59").replace(tzinfo=TZ).isoformat()
+    tomorrow_start = datetime.fromisoformat(f"{tomorrow}T06:00:00").replace(tzinfo=TZ).isoformat()
+    tomorrow_end = datetime.fromisoformat(f"{tomorrow}T11:00:00").replace(tzinfo=TZ).isoformat()
 
     today_events: list[dict] = []
     tomorrow_am_events: list[dict] = []
@@ -157,10 +151,8 @@ def main() -> None:
     _require("GOOGLE_CLIENT_SECRET", GOOGLE_CLIENT_SECRET)
     _require("GOOGLE_REFRESH_TOKEN", GOOGLE_REFRESH_TOKEN)
 
-    tz = ZoneInfo(TIMEZONE)
-    now = datetime.now(tz)
-    today = now.strftime("%Y-%m-%d")
-    tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    today = brief_date()
+    tomorrow = (date.fromisoformat(today) + timedelta(days=1)).isoformat()
 
     print(f"[fetch-data] Fetching data for {today} (tz: {TIMEZONE})")
 
