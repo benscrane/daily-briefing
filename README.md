@@ -158,6 +158,9 @@ python print_brief.py
 
 # Or run the full pipeline:
 ./daily-brief.sh
+
+# Re-run any step for a past date (e.g. reprint an old brief):
+BRIEF_DATE=2026-07-20 python print_brief.py
 ```
 
 Output files land in `$DATA_DIR/YYYY-MM-DD/`:
