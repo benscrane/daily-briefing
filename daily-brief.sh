@@ -3,7 +3,7 @@
 # daily-brief.sh
 #
 # Orchestrates the full daily brief pipeline:
-#   0. check_skip.py     — check Google Calendar for a "No Brief" event
+#   0. check_skip.py     — decide whether the brief should run today
 #   1. fetch_data.py     — pull Todoist + Google Calendar
 #   2. generate_brief.py — call AWS Bedrock to produce the brief
 #   3. print_brief.py    — send to network printer
@@ -12,11 +12,15 @@
 # the calendars listed in config.json. Override the title via SKIP_EVENT_TITLE
 # in .env.
 #
-# Cron example (runs at 6:30 AM Mon–Fri):
-#   30 6 * * 1-5 /home/pi/daily-brief/daily-brief.sh
+# Weekends are skipped by default. To get a brief on a Saturday or Sunday, add
+# an event titled "Weekend Brief" to that day (RUN_EVENT_TITLE in .env).
 #
-# For weekend runs too:
+# Cron example (runs at 6:30 AM every day — the weekday/weekend decision is
+# made by check_skip.py, not by cron):
 #   30 6 * * * /home/pi/daily-brief/daily-brief.sh
+#
+# Do not use a Mon–Fri crontab (30 6 * * 1-5); it prevents the job from ever
+# firing on a weekend, so the "Weekend Brief" opt-in would never take effect.
 #
 # Output is captured in logs/<YYYY-MM-DD>.log inside the project directory
 # (or /tmp/daily-brief-logs/ if that directory isn't writable).
@@ -67,10 +71,11 @@ _ntfy() {
 }
 
 _BRIEF_STATE="failed"
+_SKIP_REASON="No Brief event"
 _on_exit() {
   case "${_BRIEF_STATE}" in
     success) _ntfy "✅ Daily brief printed" ;;
-    skipped) _ntfy "⏭️ Daily brief skipped (No Brief event)" ;;
+    skipped) _ntfy "⏭️ Daily brief skipped (${_SKIP_REASON})" ;;
     *)       _ntfy "❌ Daily brief failed" "high" ;;
   esac
 }
@@ -106,15 +111,15 @@ export BRIEF_DATE
 # ─── Step 0: Check for skip event ─────────────────────────────────────────────
 
 echo ""
-echo "── Step 0/3: Checking for a \"No Brief\" event ──"
+echo "── Step 0/3: Checking whether to run today ──"
 if python check_skip.py; then
-  : # no skip event — proceed with the pipeline
+  : # nothing suppressing today's brief — proceed with the pipeline
 else
   SKIP_EXIT=$?
-  if [[ ${SKIP_EXIT} -eq 2 ]]; then
-    _BRIEF_STATE="skipped"
-    exit 0
-  fi
+  case ${SKIP_EXIT} in
+    2) _BRIEF_STATE="skipped"; _SKIP_REASON="No Brief event"; exit 0 ;;
+    3) _BRIEF_STATE="skipped"; _SKIP_REASON="weekend"; exit 0 ;;
+  esac
   echo "ERROR: check_skip.py failed. Aborting."
   exit 1
 fi

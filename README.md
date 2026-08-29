@@ -8,7 +8,9 @@ Runs on a cron schedule. Fetches your tasks and events, calls Claude on Amazon
 Bedrock to produce a daily brief in your usual daily-prep format, and prints it.
 
 Add a calendar event titled **"No Brief"** on any day and the whole pipeline
-(fetch, AI, print) is skipped for that day — see [Skipping a day](#skipping-a-day).
+(fetch, AI, print) is skipped for that day. Weekends are off by default; add a
+**"Weekend Brief"** event to a Saturday or Sunday to get one anyway — see
+[Skipping a day](#skipping-a-day).
 
 ---
 
@@ -186,13 +188,32 @@ of the usual success/failure one, and the script exits 0.
 The event title is configurable via `SKIP_EVENT_TITLE` in `.env` if you'd
 rather use something else (e.g. `OOO`).
 
+### Weekends
+
+Saturdays and Sundays are skipped automatically — no calendar event needed. To
+get a brief on a specific weekend day, add an event titled **"Weekend Brief"**
+(case-insensitive, configurable via `RUN_EVENT_TITLE`) to that day on any
+calendar in `calendarIds`.
+
+If both a "No Brief" and a "Weekend Brief" event land on the same day, "No
+Brief" wins — an explicit opt-out beats the opt-in.
+
+To go back to briefs seven days a week, set `SKIP_WEEKENDS=false` in `.env`.
+
+This gating lives in `check_skip.py`, not in cron, so the cron entry must fire
+every day — see [Cron setup](#cron-setup).
+
 Test it directly:
 
 ```bash
 source venv/bin/activate
 python check_skip.py
-# exit 0 = proceed, exit 2 = skip event found, exit 1 = error checking the calendar
+# 0 = proceed, 1 = error checking the calendar,
+# 2 = "No Brief" event found, 3 = weekend with no "Weekend Brief" event
 echo $?
+
+# Check a specific date without waiting for it
+BRIEF_DATE=2026-08-29 python check_skip.py; echo $?
 ```
 
 ---
@@ -203,15 +224,18 @@ echo $?
 crontab -e
 ```
 
-Add one of these lines:
+Add this line:
 
 ```cron
-# Weekdays at 6:30 AM
-30 6 * * 1-5 /home/belle/daily-briefing/daily-brief.sh
-
 # Every day at 6:30 AM
 30 6 * * * /home/belle/daily-briefing/daily-brief.sh
 ```
+
+> **Important:** Run the job every day, not `30 6 * * 1-5`. Weekends are now
+> gated by `check_skip.py` ([Weekends](#weekends)), so a Mon–Fri crontab
+> double-gates: the job never fires on a Saturday and the "Weekend Brief"
+> opt-in can never take effect. If your existing crontab still says `1-5`,
+> edit it with `crontab -e`.
 
 > **Note:** Cron runs in a minimal environment. The shell script activates the venv
 > automatically (`source venv/bin/activate`), so Python and all dependencies (including
@@ -255,3 +279,5 @@ Old files in `brief_output/` accumulate over time. To keep the last 30 days:
 | `invalid_grant` / Google auth expired | If the OAuth app is in **Testing** status, refresh tokens expire after 7 days — publish it to Production (OAuth consent screen in the Google Cloud console). Then re-run `setup_gcal_auth.py` for a fresh token |
 | Brief didn't skip despite a "No Brief" event | Check the event's title matches `SKIP_EVENT_TITLE` exactly (case-insensitive) and that it's on a calendar listed in `config.json`'s `calendarIds` |
 | Brief skipped unexpectedly | Check `logs/YYYY-MM-DD.log` for `check_skip.py` output — a stray event titled "No Brief" on a shared/subscribed calendar in `calendarIds` will also trigger it |
+| No brief on Saturday or Sunday | Expected — weekends are skipped by default. Add a "Weekend Brief" event to that day, or set `SKIP_WEEKENDS=false` for every day |
+| "Weekend Brief" event ignored on a weekend | Confirm the crontab is `30 6 * * *` and not `30 6 * * 1-5` — a weekday-only cron never runs the job on a weekend. Then check the title matches `RUN_EVENT_TITLE` exactly |
